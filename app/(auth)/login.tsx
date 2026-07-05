@@ -15,34 +15,53 @@ import {
 import { router } from 'expo-router';
 import { DatabaseService } from '@/services/DatabaseService';
 import { useUser } from '@/context/UserContext';
+import { ApiClient } from '@/services/ApiClient';
+import { SyncService } from '@/services/SyncService';
+import { NotificationService } from '@/services/NotificationService';
+import { BiometricService } from '@/services/BiometricService';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
   const { setUser } = useUser();
+
+  const completeLogin = useCallback(async (user: Awaited<ReturnType<typeof DatabaseService.getUserByEmail>>) => {
+    if (!user) return;
+    setUser(user);
+    await NotificationService.init().catch((err) => console.warn('Notification init failed:', err));
+    router.replace('/(main)/qr-display');
+  }, [setUser]);
 
   const handleAutoLogin = useCallback(async (storedEmail: string) => {
     try {
+      if (await BiometricService.isEnabled()) {
+        const ok = await BiometricService.authenticate('Unlock VeriGate Pass');
+        if (!ok) return;
+      }
       const user = await DatabaseService.getUserByEmail(storedEmail.toLowerCase().trim());
       if (user) {
-        setUser(user);
-        router.replace('/(main)/qr-display');
+        await completeLogin(user);
       }
     } catch (error) {
       console.error('Auto-login failed:', error);
     }
-  }, [setUser]);
+  }, [completeLogin]);
 
   const loadStoredCredentials = useCallback(async () => {
     try {
+      setBiometricAvailable(await BiometricService.isAvailable());
+
       const storedEmail = await DatabaseService.getStoredEmail();
       const isRecent = await DatabaseService.isLoginRecent();
-      
+      await ApiClient.loadTokens();
+
       if (storedEmail && isRecent) {
         setEmail(storedEmail);
         setRememberMe(true);
-        
+
         // Auto-login if credentials are recent (within 24 hours)
         await handleAutoLogin(storedEmail);
       } else if (storedEmail) {
@@ -68,21 +87,36 @@ export default function LoginScreen() {
     setIsLoading(true);
 
     try {
-      const user = await DatabaseService.getUserByEmail(email.toLowerCase().trim());
-      
+      const normalizedEmail = email.toLowerCase().trim();
+
+      // If a password was entered, try real backend authentication + sync
+      // first (this is what makes the local access data genuinely
+      // event-scoped instead of the static demo seed). Falls back to
+      // local-only login below if the backend is unreachable - the app
+      // stays fully offline-first either way.
+      if (password) {
+        try {
+          await ApiClient.login(normalizedEmail, password);
+          await SyncService.syncNow(normalizedEmail);
+        } catch (backendError) {
+          console.warn('Backend login failed, falling back to local data:', backendError);
+        }
+      }
+
+      const user = await DatabaseService.getUserByEmail(normalizedEmail);
+
       if (user) {
         // Store credentials if remember me is enabled
         if (rememberMe) {
-          await DatabaseService.storeUserCredentials(email.toLowerCase().trim(), true);
+          await DatabaseService.storeUserCredentials(normalizedEmail, true);
         } else {
           await DatabaseService.clearStoredCredentials();
         }
-        
-        setUser(user);
-        router.replace('/(main)/qr-display');
+
+        await completeLogin(user);
       } else {
         Alert.alert(
-          'Login Failed', 
+          'Login Failed',
           'User not found. Please check your email address.\n\nDemo users:\n• john.athlete@sports.com\n• sarah.vip@company.com\n• mike.staff@event.com'
         );
       }
@@ -166,6 +200,18 @@ export default function LoginScreen() {
               editable={!isLoading}
             />
 
+            <Text style={styles.label}>Password (optional, for live event sync)</Text>
+            <TextInput
+              style={styles.input}
+              value={password}
+              onChangeText={setPassword}
+              placeholder="Leave blank to use local demo data"
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!isLoading}
+            />
+
             <View style={styles.rememberMeContainer}>
               <Switch
                 value={rememberMe}
@@ -175,6 +221,17 @@ export default function LoginScreen() {
               />
               <Text style={styles.rememberMeText}>Remember me</Text>
             </View>
+
+            {biometricAvailable && rememberMe && (
+              <View style={styles.rememberMeContainer}>
+                <Switch
+                  onValueChange={(enabled) => BiometricService.setEnabled(enabled)}
+                  trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
+                  thumbColor="#2563eb"
+                />
+                <Text style={styles.rememberMeText}>Require biometric unlock</Text>
+              </View>
+            )}
 
             <TouchableOpacity
               style={[styles.loginButton, isLoading && styles.buttonDisabled]}

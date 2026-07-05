@@ -13,6 +13,10 @@ import QRCode from 'react-native-qrcode-svg';
 import { router } from 'expo-router';
 import { useUser } from '@/context/UserContext';
 import { DatabaseService } from '@/services/DatabaseService';
+import { SyncService } from '@/services/SyncService';
+import { NotificationService } from '@/services/NotificationService';
+import { ApiClient } from '@/services/ApiClient';
+import { QR_EXPIRY_WARNING_MS } from '@/config';
 
 const { width } = Dimensions.get('window');
 const QR_SIZE = width * 0.7;
@@ -22,12 +26,16 @@ export default function QRDisplayScreen() {
   const [qrData, setQrData] = useState('');
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [systemInfo, setSystemInfo] = useState<{areas: string[], levels: string[]}>({areas: [], levels: []});
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
   const generateQRData = useCallback(async () => {
     if (!user) return '';
 
     try {
       const secureQRData = await DatabaseService.generateSecureQRData(user);
+      const parsed = JSON.parse(secureQRData);
+      NotificationService.scheduleQrExpiryReminder(parsed.timestamp + 60 * 60 * 1000, QR_EXPIRY_WARNING_MS).catch(() => undefined);
       return secureQRData;
     } catch (error) {
       console.error('Error generating secure QR:', error);
@@ -40,6 +48,21 @@ export default function QRDisplayScreen() {
     setQrData(newQrData);
     setLastUpdated(new Date());
   }, [generateQRData]);
+
+  const handleSyncNow = useCallback(async () => {
+    if (!user) return;
+    setIsSyncing(true);
+    const result = await SyncService.syncNow(user.email);
+    setIsSyncing(false);
+    if (result.success) {
+      setSyncStatus(`Synced with ${result.eventName} · ${result.userCount} users`);
+      const refreshed = await DatabaseService.getUserById(user.id);
+      if (refreshed) setUser(refreshed);
+      refreshQR();
+    } else {
+      setSyncStatus(result.error ?? 'Sync unavailable offline');
+    }
+  }, [user, setUser, refreshQR]);
 
   useEffect(() => {
     refreshQR();
@@ -76,7 +99,9 @@ export default function QRDisplayScreen() {
             // Clear stored credentials and tokens
             await DatabaseService.clearStoredCredentials();
             await DatabaseService.clearUserToken();
-            
+            await ApiClient.clearTokens();
+            await NotificationService.cancelQrExpiryReminder();
+
             setUser(null);
             router.replace('/(auth)/login');
           },
@@ -172,6 +197,11 @@ export default function QRDisplayScreen() {
         <TouchableOpacity style={styles.refreshButton} onPress={refreshQR}>
           <Text style={styles.refreshButtonText}>Refresh QR Code</Text>
         </TouchableOpacity>
+
+        <TouchableOpacity style={[styles.refreshButton, styles.syncButton]} onPress={handleSyncNow} disabled={isSyncing}>
+          <Text style={styles.refreshButtonText}>{isSyncing ? 'Syncing...' : 'Sync with event'}</Text>
+        </TouchableOpacity>
+        {syncStatus && <Text style={styles.syncStatusText}>{syncStatus}</Text>}
       </View>
 
       <View style={styles.warningContainer}>
@@ -307,6 +337,15 @@ const styles = StyleSheet.create({
     color: '#3b82f6',
     fontSize: 14,
     fontWeight: '500',
+  },
+  syncButton: {
+    marginTop: 12,
+  },
+  syncStatusText: {
+    marginTop: 8,
+    fontSize: 12,
+    color: '#6b7280',
+    textAlign: 'center',
   },
   warningContainer: {
     backgroundColor: '#fef3c7',

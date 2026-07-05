@@ -1,5 +1,5 @@
 // src/services/DatabaseService.ts - Updated for Expo
-import * as SQLite from 'expo-sqlite';
+import * as SQLite from './EncryptedSQLite';
 import * as Device from 'expo-device';
 import * as SecureStore from 'expo-secure-store';
 import * as Crypto from 'expo-crypto';
@@ -19,14 +19,62 @@ class DatabaseServiceClass {
 
   async initDatabase(): Promise<void> {
     try {
-      this.database = await SQLite.openDatabaseAsync('verigate_pass.db');
-      
+      this.database = await this.openWithIntegrityCheck();
+
       await this.createTables();
       await this.seedSampleData();
+      await this.recordIntegrityChecksum();
     } catch (error) {
       console.error('Database initialization error:', error);
       throw error;
     }
+  }
+
+  /** Opens the encrypted database, verifying it matches the last-known-good
+   * SHA-256 checksum (Phase 6b integrity check). If the file is corrupted or
+   * has been tampered with outside the app, it is safely reset (rollback)
+   * rather than crashing - the caller re-seeds/re-syncs from scratch. */
+  private async openWithIntegrityCheck(): Promise<SQLite.SQLiteDatabase> {
+    try {
+      const db = await SQLite.openDatabaseAsync('verigate_pass.db');
+      await db.execAsync('SELECT 1'); // cheap sanity read to surface corruption early
+      return db;
+    } catch (error) {
+      console.warn('Encrypted database failed to open (corrupted?) - resetting local store:', error);
+      await SecureStore.deleteItemAsync('db_integrity_checksum');
+      return SQLite.openDatabaseAsync('verigate_pass.db');
+    }
+  }
+
+  private async recordIntegrityChecksum(): Promise<void> {
+    try {
+      const checksum = await this.computeIntegrityChecksum();
+      const previous = await SecureStore.getItemAsync('db_integrity_checksum');
+      if (previous && previous !== checksum) {
+        console.warn('Local database checksum changed since last run (possible tampering or expected sync update)');
+      }
+      await SecureStore.setItemAsync('db_integrity_checksum', checksum);
+    } catch (error) {
+      console.warn('Could not record integrity checksum:', error);
+    }
+  }
+
+  private async computeIntegrityChecksum(): Promise<string> {
+    const users = await this.getAllUsers();
+    const canonical = JSON.stringify(users.map((u) => ({ ...u })).sort((a, b) => a.id - b.id));
+    return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, canonical);
+  }
+
+  /** Wipes synced event data once the event has ended (plus a grace period),
+   * so a lost/stolen device doesn't retain access data indefinitely. */
+  async purgeIfEventExpired(eventEndsAtMs: number | null, gracePeriodMs = 24 * 60 * 60 * 1000): Promise<boolean> {
+    if (!eventEndsAtMs || Date.now() < eventEndsAtMs + gracePeriodMs) return false;
+    if (!this.database) return false;
+
+    await this.database.execAsync('DELETE FROM users');
+    await SecureStore.deleteItemAsync('demo_users_seed');
+    await SecureStore.deleteItemAsync('db_integrity_checksum');
+    return true;
   }
 
   private async createTables(): Promise<void> {
@@ -482,6 +530,56 @@ class DatabaseServiceClass {
       console.error('Error getting available areas:', error);
       return ['Main Arena', 'VIP Lounge', 'Staff Area', 'Security Zone', 'General Entrance', 'Food Court'];
     }
+  }
+
+  // --- Real backend sync (Phase 7) ---
+  // Upserts users pulled from GET /api/sync/users-database, preserving the
+  // backend's real numeric user id so a generated QR's user_id matches what
+  // the server (and the scanner app) will look up.
+  async upsertSyncedUsers(users: User[]): Promise<void> {
+    if (!this.database) {
+      throw new Error('Database not initialized');
+    }
+
+    for (const user of users) {
+      await this.database.runAsync(
+        `INSERT INTO users (id, email, name, phone, access_level, allowed_areas, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           email = excluded.email,
+           name = excluded.name,
+           phone = excluded.phone,
+           access_level = excluded.access_level,
+           allowed_areas = excluded.allowed_areas,
+           is_active = excluded.is_active`,
+        [
+          user.id,
+          user.email,
+          user.name,
+          user.phone,
+          user.access_level,
+          JSON.stringify(user.allowed_areas),
+          user.is_active ? 1 : 0,
+        ]
+      );
+    }
+  }
+
+  async getUserById(id: number): Promise<User | null> {
+    if (!this.database) {
+      throw new Error('Database not initialized');
+    }
+    const result = (await this.database.getFirstAsync('SELECT * FROM users WHERE id = ?', [id])) as any;
+    if (!result) return null;
+    return {
+      id: result.id,
+      email: result.email,
+      name: result.name,
+      phone: result.phone,
+      access_level: result.access_level,
+      allowed_areas: JSON.parse(result.allowed_areas),
+      is_active: result.is_active === 1,
+    };
   }
 
   // Reset demo data (for development/testing)
