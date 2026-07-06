@@ -26,6 +26,7 @@ export default function LoginScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricEnabled, setBiometricEnabled] = useState(false);
   const { setUser } = useUser();
 
   const completeLogin = useCallback(async (user: Awaited<ReturnType<typeof DatabaseService.getUserByEmail>>) => {
@@ -53,6 +54,7 @@ export default function LoginScreen() {
   const loadStoredCredentials = useCallback(async () => {
     try {
       setBiometricAvailable(await BiometricService.isAvailable());
+      setBiometricEnabled(await BiometricService.isEnabled());
 
       const storedEmail = await DatabaseService.getStoredEmail();
       const isRecent = await DatabaseService.isLoginRecent();
@@ -225,7 +227,11 @@ export default function LoginScreen() {
             {biometricAvailable && rememberMe && (
               <View style={styles.rememberMeContainer}>
                 <Switch
-                  onValueChange={(enabled) => BiometricService.setEnabled(enabled)}
+                  value={biometricEnabled}
+                  onValueChange={(enabled) => {
+                    setBiometricEnabled(enabled);
+                    BiometricService.setEnabled(enabled);
+                  }}
                   trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
                   thumbColor="#2563eb"
                 />

@@ -22,6 +22,7 @@ class DatabaseServiceClass {
       this.database = await this.openWithIntegrityCheck();
 
       await this.createTables();
+      await this.verifyIntegrityAndRecoverIfTampered();
       await this.seedSampleData();
       await this.recordIntegrityChecksum();
     } catch (error) {
@@ -30,29 +31,52 @@ class DatabaseServiceClass {
     }
   }
 
-  /** Opens the encrypted database, verifying it matches the last-known-good
-   * SHA-256 checksum (Phase 6b integrity check). If the file is corrupted or
-   * has been tampered with outside the app, it is safely reset (rollback)
-   * rather than crashing - the caller re-seeds/re-syncs from scratch. */
+  /** Opens the encrypted database. If the file fails to open or fails a
+   * cheap sanity query (corrupted/tampered so badly SQLCipher can't even
+   * read it), it is genuinely deleted and recreated from scratch with a
+   * fresh device key - not just reopened against the same broken file. */
   private async openWithIntegrityCheck(): Promise<SQLite.SQLiteDatabase> {
     try {
       const db = await SQLite.openDatabaseAsync('verigate_pass.db');
       await db.execAsync('SELECT 1'); // cheap sanity read to surface corruption early
       return db;
     } catch (error) {
-      console.warn('Encrypted database failed to open (corrupted?) - resetting local store:', error);
+      console.warn('Encrypted database failed to open (corrupted?) - deleting and recreating:', error);
+      await SQLite.resetDatabase('verigate_pass.db');
       await SecureStore.deleteItemAsync('db_integrity_checksum');
       return SQLite.openDatabaseAsync('verigate_pass.db');
+    }
+  }
+
+  /** Compares the current data against the last-recorded SHA-256 checksum
+   * *before* this launch does any seeding/sync writes of its own. A mismatch
+   * on a database that already had data and a prior checksum means the file
+   * was modified outside the app between launches - the safe response is to
+   * reset rather than silently trust (and build further sync state on top
+   * of) altered data. */
+  private async verifyIntegrityAndRecoverIfTampered(): Promise<void> {
+    try {
+      const previous = await SecureStore.getItemAsync('db_integrity_checksum');
+      if (!previous) return; // first run, nothing to compare against yet
+
+      const current = await this.computeIntegrityChecksum();
+      if (current === previous) return;
+
+      const existingUsers = await this.getAllUsers();
+      if (existingUsers.length === 0) return; // nothing there to have been tampered with
+
+      console.warn('Local database integrity check failed (unexpected external change) - resetting to a clean state');
+      await this.database?.execAsync('DELETE FROM users');
+      await SecureStore.deleteItemAsync('demo_users_seed');
+      await SecureStore.deleteItemAsync('db_integrity_checksum');
+    } catch (error) {
+      console.warn('Integrity verification failed to run:', error);
     }
   }
 
   private async recordIntegrityChecksum(): Promise<void> {
     try {
       const checksum = await this.computeIntegrityChecksum();
-      const previous = await SecureStore.getItemAsync('db_integrity_checksum');
-      if (previous && previous !== checksum) {
-        console.warn('Local database checksum changed since last run (possible tampering or expected sync update)');
-      }
       await SecureStore.setItemAsync('db_integrity_checksum', checksum);
     } catch (error) {
       console.warn('Could not record integrity checksum:', error);
@@ -73,7 +97,7 @@ class DatabaseServiceClass {
 
     await this.database.execAsync('DELETE FROM users');
     await SecureStore.deleteItemAsync('demo_users_seed');
-    await SecureStore.deleteItemAsync('db_integrity_checksum');
+    await this.recordIntegrityChecksum();
     return true;
   }
 
@@ -542,6 +566,11 @@ class DatabaseServiceClass {
     }
 
     for (const user of users) {
+      // A local demo-seeded row can hold this same email under a different
+      // (locally-generated) id. Since email is UNIQUE, upserting by id alone
+      // would violate that constraint in that case - clear the stale row first.
+      await this.database.runAsync(`DELETE FROM users WHERE email = ? AND id != ?`, [user.email, user.id]);
+
       await this.database.runAsync(
         `INSERT INTO users (id, email, name, phone, access_level, allowed_areas, is_active)
          VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -563,6 +592,10 @@ class DatabaseServiceClass {
         ]
       );
     }
+
+    // Sync is a legitimate data change - re-baseline the integrity checksum
+    // so the next launch doesn't mistake this update for external tampering.
+    await this.recordIntegrityChecksum();
   }
 
   async getUserById(id: number): Promise<User | null> {

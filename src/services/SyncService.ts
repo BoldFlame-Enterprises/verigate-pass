@@ -56,7 +56,13 @@ class SyncServiceClass {
    * Fails open: on any network error, the app keeps working from whatever
    * was last synced (or the local demo seed on first run).
    */
-  async syncNow(email: string): Promise<SyncResult> {
+  /**
+   * @param email The current user's email, used to sync just their own
+   *   record. Pass `null` explicitly to sync every user returned for the
+   *   event instead (used when reacting to a generic "access changed" push,
+   *   where the affected user isn't known client-side).
+   */
+  async syncNow(email: string | null): Promise<SyncResult> {
     try {
       if (!ApiClient.isAuthenticated()) {
         return { success: false, error: 'Not authenticated with backend' };
@@ -75,7 +81,7 @@ class SyncServiceClass {
         params: { event_id: eventId },
       });
 
-      const matchingUser = usersData.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+      const matchingUser = email ? usersData.users.find((u) => u.email.toLowerCase() === email.toLowerCase()) : null;
       await DatabaseService.upsertSyncedUsers(matchingUser ? [matchingUser] : usersData.users);
 
       if (event.ends_at) {
