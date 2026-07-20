@@ -29,7 +29,7 @@ The local database is a real SQLCipher-encrypted SQLite file (`@op-engineering/o
 Because `op-sqlite` is a native module, **this app cannot run in Expo Go** - it requires a custom dev client or a full prebuild:
 
 ```bash
-npm install
+npm ci
 npx expo prebuild        # generates ios/ and android/ native projects
 npx expo run:android     # or: npx expo run:ios
 # or, for a shareable dev client build:
@@ -46,7 +46,8 @@ Set `EXPO_PUBLIC_API_URL` (or `expo.extra.apiBaseUrl` in `app.json`) to your bac
 - `npm run android` / `npm run ios` — run on device/emulator
 - `npm run prebuild` — generate native projects (required once before `expo run:*` or local EAS builds)
 - `npm run build:android` / `npm run build:ios` — EAS cloud builds
-- `npm run lint` / `npm test` — lint and unit tests
+- `npm run type-check` / `npm run lint` / `npm run doctor` — static validation
+- `npm test` — non-watch Jest runner (no test files are committed yet)
 
 ## Future work
 
