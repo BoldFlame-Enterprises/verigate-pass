@@ -493,7 +493,7 @@ class DatabaseServiceClass {
     }
   }
 
-  // --- Real backend sync (Phase 7) ---
+  // --- Backend synchronization ---
   // Upserts users pulled from GET /api/sync/users-database, preserving the
   // backend's real numeric user id so a generated QR's user_id matches what
   // the server (and the scanner app) will look up.

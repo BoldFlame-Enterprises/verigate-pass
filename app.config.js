@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Extends app.json dynamically so that Android FCM push (Phase 5b) works the
+ * Extends app.json dynamically so that Android FCM push works the
  * moment a free `google-services.json` is dropped into the project root, but
  * never breaks `expo prebuild`/`eas build` when it's absent (Expo throws if
  * `android.googleServicesFile` points at a missing file).
