@@ -4,12 +4,12 @@ The mobile app event attendees use to display their signed, device-bound QR code
 
 ## 🚀 Features
 
-- **Signed, offline QR display**: SHA-256 HMAC-signed QR payload, generated and displayed fully offline.
-- **Device fingerprinting**: QR payload is bound to a hashed device fingerprint (`expo-device` + `expo-crypto`).
+- **Signed, offline QR display**: the backend issues a P-256 event/device credential; Pass signs a rotating 60-second presentation with a per-installation SecureStore key.
+- **Bounded replay model**: screen-capture blocking reduces accidental sharing, but a copied presentation can be replayed during its short validity window; zero offline replay is not claimed.
 - **Screen-capture protection**: `expo-screen-capture` blocks screenshots/screen recording app-wide.
 - **Backgrounding protection + auto-logout**: a blur overlay covers the screen the instant the app backgrounds (`expo-blur`), and the session is force-logged-out after 5 minutes of inactivity or backgrounding.
 - **Biometric login**: optional Face ID / fingerprint unlock (`expo-local-authentication`) for a remembered session, credentials held in `expo-secure-store`.
-- **Live event sync**: logging in with a password authenticates against the backend and pulls this event's real access level + permitted areas down into the encrypted local store; leaving the password blank keeps the app fully offline on local demo data.
+- **Live event sync**: production login authenticates against the backend and downloads only the caller's assignment-rich event projection. Blank-password local data is available only when `EXPO_PUBLIC_DEMO_MODE=true`.
 - **Access-level indicator + permitted areas**: badge and detail view showing the user's access level, permitted/restricted areas, and QR validity.
 - **Notifications**: local QR-expiry reminders (`expo-notifications`) always work; Android devices also register for real backend-triggered push (e.g. "your access changed") the moment a `google-services.json` is present (see below) - iOS push is implemented backend-side but gated off by default (requires a paid Apple Developer account).
 
@@ -42,7 +42,7 @@ Set `EXPO_PUBLIC_API_URL` (or `expo.extra.apiBaseUrl` in `app.json`) to your bac
 
 ## 📦 Scripts
 
-- `npm start` — start the Expo dev server (Expo Go works for everything except local DB encryption; use a dev client for the full feature set)
+- `npm start` — start the Expo bundler; the app itself requires a custom dev client/full native build because SQLCipher is native and is not available in Expo Go.
 - `npm run android` / `npm run ios` — run on device/emulator
 - `npm run prebuild` — generate native projects (required once before `expo run:*` or local EAS builds)
 - `npm run build:android` / `npm run build:ios` — EAS cloud builds
