@@ -3,6 +3,7 @@ import * as Application from 'expo-application';
 import { Platform } from 'react-native';
 import { ApiClient } from './ApiClient';
 import { DatabaseService, User } from './DatabaseService';
+import { QrCredentialService, AuthorityCredential } from './QrCredentialService';
 
 const CURRENT_EVENT_ID_KEY = 'verigate_pass_event_id';
 const CURRENT_EVENT_NAME_KEY = 'verigate_pass_event_name';
@@ -26,7 +27,7 @@ interface SyncResult {
 class SyncServiceClass {
   private deviceId: string | null = null;
 
-  private async getDeviceId(): Promise<string> {
+  async getDeviceId(): Promise<string> {
     if (this.deviceId) return this.deviceId;
     this.deviceId =
       Platform.OS === 'android'
@@ -49,20 +50,7 @@ class SyncServiceClass {
     return stored ? Number(stored) : null;
   }
 
-  /**
-   * Pulls the user's event membership + this event's user record (with real,
-   * server-assigned access levels/areas) down into the local encrypted store,
-   * and reports a sync heartbeat for the dashboard's real-time monitor.
-   * Fails open: on any network error, the app keeps working from whatever
-   * was last synced (or the local demo seed on first run).
-   */
-  /**
-   * @param email The current user's email, used to sync just their own
-   *   record. Pass `null` explicitly to sync every user returned for the
-   *   event instead (used when reacting to a generic "access changed" push,
-   *   where the affected user isn't known client-side).
-   */
-  async syncNow(email: string | null): Promise<SyncResult> {
+  async syncNow(): Promise<SyncResult> {
     try {
       if (!ApiClient.isAuthenticated()) {
         return { success: false, error: 'Not authenticated with backend' };
@@ -77,12 +65,21 @@ class SyncServiceClass {
       let event = events.find((e) => e.id === eventId) ?? events[0];
       eventId = event.id;
 
-      const usersData = await ApiClient.request<{ users: User[] }>('/sync/users-database', {
+      const credentialData = await ApiClient.request<{ contract_version: string; user: User }>('/sync/my-credential', {
         params: { event_id: eventId },
       });
+      await DatabaseService.upsertSyncedUsers([credentialData.user]);
 
-      const matchingUser = email ? usersData.users.find((u) => u.email.toLowerCase() === email.toLowerCase()) : null;
-      await DatabaseService.upsertSyncedUsers(matchingUser ? [matchingUser] : usersData.users);
+      const deviceId = await this.getDeviceId();
+      const devicePublicKey = await QrCredentialService.getPublicKeySpkiBase64();
+      const qrData = await ApiClient.request<{ credential: AuthorityCredential }>('/qr/generate', {
+        params: {
+          event_id: eventId,
+          device_id: deviceId,
+          device_public_key: devicePublicKey,
+        },
+      });
+      await DatabaseService.storeQrCredential(qrData.credential);
 
       if (event.ends_at) {
         await DatabaseService.purgeIfEventExpired(new Date(event.ends_at).getTime());
@@ -92,13 +89,12 @@ class SyncServiceClass {
       await SecureStore.setItemAsync(CURRENT_EVENT_NAME_KEY, event.name);
       await SecureStore.setItemAsync(LAST_SYNC_AT_KEY, String(Date.now()));
 
-      const deviceId = await this.getDeviceId();
       await ApiClient.request('/notifications/sync-heartbeat', {
         method: 'POST',
         body: { device_id: deviceId, app: 'pass', event_id: eventId, platform: Platform.OS },
       }).catch(() => undefined); // heartbeat is best-effort, never blocks sync
 
-      return { success: true, eventId, eventName: event.name, userCount: usersData.users.length };
+      return { success: true, eventId, eventName: event.name, userCount: 1 };
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : 'Sync failed' };
     }

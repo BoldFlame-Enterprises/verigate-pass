@@ -16,7 +16,9 @@ import { DatabaseService } from '@/services/DatabaseService';
 import { SyncService } from '@/services/SyncService';
 import { NotificationService } from '@/services/NotificationService';
 import { ApiClient } from '@/services/ApiClient';
-import { QR_EXPIRY_WARNING_MS } from '@/config';
+import { DEMO_MODE, QR_EXPIRY_WARNING_MS } from '@/config';
+import { QrCredentialService } from '@/services/QrCredentialService';
+import { OfflineSessionService } from '@/services/OfflineSessionService';
 
 const { width } = Dimensions.get('window');
 const QR_SIZE = width * 0.7;
@@ -33,10 +35,17 @@ export default function QRDisplayScreen() {
     if (!user) return '';
 
     try {
-      const secureQRData = await DatabaseService.generateSecureQRData(user);
-      const parsed = JSON.parse(secureQRData);
-      NotificationService.scheduleQrExpiryReminder(parsed.timestamp + 60 * 60 * 1000, QR_EXPIRY_WARNING_MS).catch(() => undefined);
-      return secureQRData;
+      const session = await OfflineSessionService.getValid(user.email);
+      const eventId = (await SyncService.getCurrentEventId()) ?? session?.eventId ?? null;
+      if (eventId == null) throw new Error('No bounded event session is selected');
+      const credential = await DatabaseService.getQrCredential(eventId, user.id);
+      if (!credential) {
+        if (DEMO_MODE) return QrCredentialService.createDemoPresentation(user, eventId);
+        throw new Error('No current signed credential; connect and sync');
+      }
+      const presentation = await QrCredentialService.createPresentation(credential);
+      NotificationService.scheduleQrExpiryReminder(credential.payload.expires_at, QR_EXPIRY_WARNING_MS).catch(() => undefined);
+      return presentation;
     } catch (error) {
       console.error('Error generating secure QR:', error);
       return '';
@@ -52,10 +61,10 @@ export default function QRDisplayScreen() {
   const handleSyncNow = useCallback(async () => {
     if (!user) return;
     setIsSyncing(true);
-    const result = await SyncService.syncNow(user.email);
+    const result = await SyncService.syncNow();
     setIsSyncing(false);
     if (result.success) {
-      setSyncStatus(`Synced with ${result.eventName} · ${result.userCount} users`);
+      setSyncStatus(`Synced your credential with ${result.eventName}`);
       const refreshed = await DatabaseService.getUserById(user.id);
       if (refreshed) setUser(refreshed);
       refreshQR();
@@ -68,10 +77,10 @@ export default function QRDisplayScreen() {
     refreshQR();
     loadSystemInfo();
     
-    // Auto-refresh every 30 minutes
+    // Short-lived device-signed presentations rotate every 30 seconds.
     const interval = setInterval(() => {
       refreshQR();
-    }, 30 * 60 * 1000);
+    }, 30 * 1000);
 
     return () => clearInterval(interval);
   }, [refreshQR]);
@@ -100,6 +109,7 @@ export default function QRDisplayScreen() {
             await DatabaseService.clearStoredCredentials();
             await DatabaseService.clearUserToken();
             await ApiClient.clearTokens();
+            await OfflineSessionService.clear();
             await NotificationService.cancelQrExpiryReminder();
 
             setUser(null);
@@ -207,13 +217,13 @@ export default function QRDisplayScreen() {
       <View style={styles.warningContainer}>
         <Text style={styles.warningTitle}>⚠️ Security Notice</Text>
         <Text style={styles.warningText}>
-          • QR code is device-specific and cannot be shared
+          • QR presentations are device-key signed and expire quickly
         </Text>
         <Text style={styles.warningText}>
           • Code refreshes automatically for security
         </Text>
         <Text style={styles.warningText}>
-          • Do not share screenshots of this QR code
+          • Screenshots may work briefly; never share them
         </Text>
       </View>
 

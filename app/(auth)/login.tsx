@@ -19,6 +19,8 @@ import { ApiClient } from '@/services/ApiClient';
 import { SyncService } from '@/services/SyncService';
 import { NotificationService } from '@/services/NotificationService';
 import { BiometricService } from '@/services/BiometricService';
+import { OfflineSessionService } from '@/services/OfflineSessionService';
+import { DEMO_MODE } from '@/config';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -38,6 +40,8 @@ export default function LoginScreen() {
 
   const handleAutoLogin = useCallback(async (storedEmail: string) => {
     try {
+      const session = await OfflineSessionService.getValid(storedEmail);
+      if (!session || (session.mode === 'demo' && !DEMO_MODE)) return;
       if (await BiometricService.isEnabled()) {
         const ok = await BiometricService.authenticate('Unlock VeriGate Pass');
         if (!ok) return;
@@ -57,14 +61,13 @@ export default function LoginScreen() {
       setBiometricEnabled(await BiometricService.isEnabled());
 
       const storedEmail = await DatabaseService.getStoredEmail();
-      const isRecent = await DatabaseService.isLoginRecent();
       await ApiClient.loadTokens();
 
-      if (storedEmail && isRecent) {
+      const session = storedEmail ? await OfflineSessionService.getValid(storedEmail) : null;
+      if (storedEmail && session) {
         setEmail(storedEmail);
         setRememberMe(true);
 
-        // Auto-login if credentials are recent (within 24 hours)
         await handleAutoLogin(storedEmail);
       } else if (storedEmail) {
         setEmail(storedEmail);
@@ -91,23 +94,27 @@ export default function LoginScreen() {
     try {
       const normalizedEmail = email.toLowerCase().trim();
 
-      // If a password was entered, try real backend authentication + sync
-      // first (this is what makes the local access data genuinely
-      // event-scoped instead of the static demo seed). Falls back to
-      // local-only login below if the backend is unreachable - the app
-      // stays fully offline-first either way.
-      if (password) {
-        try {
-          await ApiClient.login(normalizedEmail, password);
-          await SyncService.syncNow(normalizedEmail);
-        } catch (backendError) {
-          console.warn('Backend login failed, falling back to local data:', backendError);
-        }
+      if (!password && !DEMO_MODE) {
+        Alert.alert('Password Required', 'Production mode requires backend authentication.');
+        return;
       }
 
+      let eventId = 0;
+      let mode: 'production' | 'demo' = 'demo';
+      if (password) {
+        await ApiClient.login(normalizedEmail, password);
+        const sync = await SyncService.syncNow();
+        if (!sync.success || !sync.eventId) {
+          await ApiClient.clearTokens();
+          throw new Error(sync.error || 'Credential sync failed');
+        }
+        eventId = sync.eventId;
+        mode = 'production';
+      }
       const user = await DatabaseService.getUserByEmail(normalizedEmail);
 
       if (user) {
+        await OfflineSessionService.create(user.id, normalizedEmail, eventId, mode);
         // Store credentials if remember me is enabled
         if (rememberMe) {
           await DatabaseService.storeUserCredentials(normalizedEmail, true);
@@ -119,11 +126,13 @@ export default function LoginScreen() {
       } else {
         Alert.alert(
           'Login Failed',
-          'User not found. Please check your email address.\n\nDemo users:\n• john.athlete@sports.com\n• sarah.vip@company.com\n• mike.staff@event.com'
+          DEMO_MODE
+            ? 'User not found. Check the email or reset the demo data.'
+            : 'No synchronized credential was found for this authenticated account.'
         );
       }
     } catch (error) {
-      Alert.alert('Error', 'Login failed. Please try again.');
+      Alert.alert('Login Failed', error instanceof Error ? error.message : 'Login failed. Please try again.');
       console.error('Login error:', error);
     } finally {
       setIsLoading(false);
@@ -202,12 +211,12 @@ export default function LoginScreen() {
               editable={!isLoading}
             />
 
-            <Text style={styles.label}>Password (optional, for live event sync)</Text>
+            <Text style={styles.label}>{DEMO_MODE ? 'Password (blank only for demo accounts)' : 'Password'}</Text>
             <TextInput
               style={styles.input}
               value={password}
               onChangeText={setPassword}
-              placeholder="Leave blank to use local demo data"
+              placeholder={DEMO_MODE ? 'Blank selects explicit demo mode' : 'Enter your backend password'}
               secureTextEntry
               autoCapitalize="none"
               autoCorrect={false}
@@ -249,12 +258,12 @@ export default function LoginScreen() {
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
+            {DEMO_MODE && <TouchableOpacity
               style={styles.demoButton}
               onPress={showDemoUsers}
             >
               <Text style={styles.demoButtonText}>View Demo Users</Text>
-            </TouchableOpacity>
+            </TouchableOpacity>}
           </View>
 
           <View style={styles.footer}>

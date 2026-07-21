@@ -6,6 +6,7 @@ import { DatabaseService } from '@/services/DatabaseService';
 import { ApiClient } from '@/services/ApiClient';
 import { NotificationService } from '@/services/NotificationService';
 import SecurityGate from '@/components/SecurityGate';
+import { OfflineSessionService } from '@/services/OfflineSessionService';
 
 export default function MainLayout() {
   const { user, setUser } = useUser();
@@ -14,6 +15,7 @@ export default function MainLayout() {
     await DatabaseService.clearStoredCredentials();
     await DatabaseService.clearUserToken();
     await ApiClient.clearTokens();
+    await OfflineSessionService.clear();
     await NotificationService.cancelQrExpiryReminder();
     setUser(null);
     router.replace('/(auth)/login');

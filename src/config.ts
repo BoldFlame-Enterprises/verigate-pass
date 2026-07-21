@@ -6,6 +6,10 @@ export const API_BASE_URL: string =
   (Constants.expoConfig?.extra?.apiBaseUrl as string | undefined) ||
   'http://localhost:3000/api';
 
+export const DEMO_MODE: boolean =
+  process.env.EXPO_PUBLIC_DEMO_MODE === 'true' ||
+  Constants.expoConfig?.extra?.demoMode === true;
+
 // APNS_ENABLED mirrors the backend flag; the app only attempts to register
 // for remote push at all once a backend event tells it push is available,
 // but this default keeps iOS registration inert unless explicitly turned on.

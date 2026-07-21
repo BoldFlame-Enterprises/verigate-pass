@@ -25,6 +25,7 @@
     "sqlcipher": true
   },
   "dependencies": {
+    "@noble/curves": "^1.9.7",
     "@op-engineering/op-sqlite": "^9.2.7",
     "expo": "~53.0.16",
     "expo-application": "~6.1.5",

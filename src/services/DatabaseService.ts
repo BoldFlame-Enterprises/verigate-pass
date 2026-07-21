@@ -1,16 +1,19 @@
 // src/services/DatabaseService.ts - Updated for Expo
 import * as SQLite from './EncryptedSQLite';
-import * as Device from 'expo-device';
 import * as SecureStore from 'expo-secure-store';
 import * as Crypto from 'expo-crypto';
+import { DEMO_MODE } from '../config';
+import type { AuthorityCredential, CredentialAssignment } from './QrCredentialService';
 
 export interface User {
   id: number;
+  event_id?: number;
   email: string;
   name: string;
   phone: string;
   access_level: string;
   allowed_areas: string[];
+  assignments?: CredentialAssignment[];
   is_active: boolean;
 }
 
@@ -23,7 +26,7 @@ class DatabaseServiceClass {
 
       await this.createTables();
       await this.verifyIntegrityAndRecoverIfTampered();
-      await this.seedSampleData();
+      if (DEMO_MODE) await this.seedSampleData();
       await this.recordIntegrityChecksum();
     } catch (error) {
       console.error('Database initialization error:', error);
@@ -95,7 +98,7 @@ class DatabaseServiceClass {
     if (!eventEndsAtMs || Date.now() < eventEndsAtMs + gracePeriodMs) return false;
     if (!this.database) return false;
 
-    await this.database.execAsync('DELETE FROM users');
+    await this.database.execAsync('DELETE FROM users; DELETE FROM qr_credentials;');
     await SecureStore.deleteItemAsync('demo_users_seed');
     await this.recordIntegrityChecksum();
     return true;
@@ -112,13 +115,31 @@ class DatabaseServiceClass {
         email TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
         phone TEXT NOT NULL,
+        event_id INTEGER DEFAULT 0,
         access_level TEXT NOT NULL,
         allowed_areas TEXT NOT NULL,
+        assignments TEXT DEFAULT '[]',
         is_active INTEGER DEFAULT 1
       );
     `;
 
     await this.database.execAsync(createUsersTable);
+    const columns = await this.database.getAllAsync('PRAGMA table_info(users)') as any[];
+    if (!columns.some((column) => column.name === 'event_id')) {
+      await this.database.execAsync('ALTER TABLE users ADD COLUMN event_id INTEGER DEFAULT 0');
+    }
+    if (!columns.some((column) => column.name === 'assignments')) {
+      await this.database.execAsync(`ALTER TABLE users ADD COLUMN assignments TEXT DEFAULT '[]'`);
+    }
+    await this.database.execAsync(`
+      CREATE TABLE IF NOT EXISTS qr_credentials (
+        event_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        credential TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        PRIMARY KEY (event_id, user_id)
+      )
+    `);
   }
 
   private async seedSampleData(): Promise<void> {
@@ -326,11 +347,13 @@ class DatabaseServiceClass {
     if (result) {
       return {
         id: result.id,
+        event_id: result.event_id || 0,
         email: result.email,
         name: result.name,
         phone: result.phone,
         access_level: result.access_level,
         allowed_areas: JSON.parse(result.allowed_areas),
+        assignments: JSON.parse(result.assignments || '[]'),
         is_active: result.is_active === 1
       };
     }
@@ -348,101 +371,15 @@ class DatabaseServiceClass {
 
     return results.map(row => ({
       id: row.id,
+      event_id: row.event_id || 0,
       email: row.email,
       name: row.name,
       phone: row.phone,
       access_level: row.access_level,
       allowed_areas: JSON.parse(row.allowed_areas),
+      assignments: JSON.parse(row.assignments || '[]'),
       is_active: row.is_active === 1
     }));
-  }
-
-  // Device fingerprinting using Expo Device
-  async getDeviceFingerprint(): Promise<string> {
-    const deviceId = Device.osInternalBuildId ?? 'unknown';
-    const deviceName = Device.deviceName ?? 'unknown';
-    const osVersion = Device.osVersion ?? 'unknown';
-    
-    const fingerprint = `${deviceId}-${deviceName}-${osVersion}`;
-    const hashedFingerprint = await Crypto.digestStringAsync(
-      Crypto.CryptoDigestAlgorithm.SHA256,
-      fingerprint
-    );
-    
-    return hashedFingerprint;
-  }
-
-  // Secure QR code generation with HMAC
-  async generateSecureQRData(user: User): Promise<string> {
-    const deviceFingerprint = await this.getDeviceFingerprint();
-    const timestamp = Date.now();
-    
-    const qrPayload = {
-      user_id: user.id,
-      email: user.email,
-      name: user.name,
-      access_level: user.access_level,
-      allowed_areas: user.allowed_areas,
-      timestamp,
-      expires_at: timestamp + (60 * 60 * 1000), // 1 hour expiry
-      device_fingerprint: deviceFingerprint,
-      version: '2.0'
-    };
-
-    const payloadString = JSON.stringify(qrPayload);
-    
-    // Create HMAC signature for integrity
-    const secret = 'event_secret_key_2024';
-    const signature = await Crypto.digestStringAsync(
-      Crypto.CryptoDigestAlgorithm.SHA256,
-      payloadString + secret
-    );
-
-    const securePayload = {
-      data: payloadString,
-      signature,
-      timestamp
-    };
-
-    return JSON.stringify(securePayload);
-  }
-
-  // Verify QR code integrity
-  async verifyQRData(qrData: string): Promise<{ valid: boolean; payload?: any; reason?: string }> {
-    try {
-      const parsed = JSON.parse(qrData);
-      
-      if (!parsed.data || !parsed.signature || !parsed.timestamp) {
-        return { valid: false, reason: 'Invalid QR format' };
-      }
-
-      // Check if QR is too old (older than 24 hours)
-      if (Date.now() - parsed.timestamp > 24 * 60 * 60 * 1000) {
-        return { valid: false, reason: 'QR code expired' };
-      }
-
-      // Verify signature
-      const secret = 'event_secret_key_2024';
-      const expectedSignature = await Crypto.digestStringAsync(
-        Crypto.CryptoDigestAlgorithm.SHA256,
-        parsed.data + secret
-      );
-
-      if (parsed.signature !== expectedSignature) {
-        return { valid: false, reason: 'QR code tampered' };
-      }
-
-      const payload = JSON.parse(parsed.data);
-      
-      // Check expiry
-      if (payload.expires_at && Date.now() > payload.expires_at) {
-        return { valid: false, reason: 'QR code expired' };
-      }
-
-      return { valid: true, payload };
-    } catch {
-      return { valid: false, reason: 'Invalid QR data' };
-    }
   }
 
   // Secure credential storage methods
@@ -566,28 +503,38 @@ class DatabaseServiceClass {
     }
 
     for (const user of users) {
+      const assignments = user.assignments ?? [];
+      const primaryAssignment = [...assignments].sort((a, b) => b.access_priority - a.access_priority)[0];
+      const accessLevel = primaryAssignment?.access_level_name ?? user.access_level ?? 'general';
+      const allowedAreas = assignments.length > 0
+        ? [...new Set(assignments.map((assignment) => assignment.area_name))]
+        : user.allowed_areas ?? [];
       // A local demo-seeded row can hold this same email under a different
       // (locally-generated) id. Since email is UNIQUE, upserting by id alone
       // would violate that constraint in that case - clear the stale row first.
       await this.database.runAsync(`DELETE FROM users WHERE email = ? AND id != ?`, [user.email, user.id]);
 
       await this.database.runAsync(
-        `INSERT INTO users (id, email, name, phone, access_level, allowed_areas, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO users (id, event_id, email, name, phone, access_level, allowed_areas, assignments, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
+           event_id = excluded.event_id,
            email = excluded.email,
            name = excluded.name,
            phone = excluded.phone,
            access_level = excluded.access_level,
            allowed_areas = excluded.allowed_areas,
+           assignments = excluded.assignments,
            is_active = excluded.is_active`,
         [
           user.id,
+          user.event_id ?? 0,
           user.email,
           user.name,
           user.phone,
-          user.access_level,
-          JSON.stringify(user.allowed_areas),
+          accessLevel,
+          JSON.stringify(allowedAreas),
+          JSON.stringify(assignments),
           user.is_active ? 1 : 0,
         ]
       );
@@ -606,18 +553,48 @@ class DatabaseServiceClass {
     if (!result) return null;
     return {
       id: result.id,
+      event_id: result.event_id || 0,
       email: result.email,
       name: result.name,
       phone: result.phone,
       access_level: result.access_level,
       allowed_areas: JSON.parse(result.allowed_areas),
+      assignments: JSON.parse(result.assignments || '[]'),
       is_active: result.is_active === 1,
     };
+  }
+
+  async storeQrCredential(credential: AuthorityCredential): Promise<void> {
+    if (!this.database) throw new Error('Database not initialized');
+    await this.database.runAsync(
+      `INSERT INTO qr_credentials (event_id, user_id, credential, expires_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(event_id, user_id) DO UPDATE SET
+         credential = excluded.credential,
+         expires_at = excluded.expires_at`,
+      [
+        credential.payload.event_id,
+        credential.payload.user_id,
+        JSON.stringify(credential),
+        credential.payload.expires_at,
+      ]
+    );
+  }
+
+  async getQrCredential(eventId: number, userId: number): Promise<AuthorityCredential | null> {
+    if (!this.database) throw new Error('Database not initialized');
+    const row = await this.database.getFirstAsync(
+      'SELECT credential, expires_at FROM qr_credentials WHERE event_id = ? AND user_id = ?',
+      [eventId, userId]
+    ) as any;
+    if (!row || Number(row.expires_at) <= Date.now()) return null;
+    return JSON.parse(row.credential) as AuthorityCredential;
   }
 
   // Reset demo data (for development/testing)
   async resetDemoData(): Promise<void> {
     try {
+      if (!DEMO_MODE) throw new Error('Demo data is disabled in this build');
       // Clear existing users
       await this.database?.execAsync('DELETE FROM users');
       

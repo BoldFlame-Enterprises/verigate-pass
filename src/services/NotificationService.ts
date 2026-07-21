@@ -39,7 +39,7 @@ class NotificationServiceClass {
     this.responseListener = Notifications.addNotificationResponseReceivedListener((response) => {
       const data = response.notification.request.content.data as { type?: string };
       if (data?.type === 'access_change') {
-        SyncService.syncNow(null).catch(() => undefined);
+        SyncService.syncNow().catch(() => undefined);
       }
     });
 
