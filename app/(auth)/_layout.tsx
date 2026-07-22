@@ -17,7 +17,7 @@ export default function AuthLayout() {
       <Stack.Screen 
         name="login" 
         options={{ 
-          title: 'SportGate Pass Login',
+          title: 'VeriGate Pass Login',
           headerShown: true
         }} 
       />

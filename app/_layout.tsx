@@ -44,7 +44,7 @@ export default function RootLayout() {
         <Stack.Screen 
           name="index" 
           options={{ 
-            title: 'SportGate Pass',
+            title: 'VeriGate Pass',
             headerShown: false 
           }} 
         />

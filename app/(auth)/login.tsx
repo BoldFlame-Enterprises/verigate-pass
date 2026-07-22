@@ -195,7 +195,7 @@ export default function LoginScreen() {
     >
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <View style={styles.content}>
-          <Text style={styles.title}>SportGate Pass</Text>
+          <Text style={styles.title}>VeriGate Pass</Text>
           <Text style={styles.subtitle}>Secure Digital Access</Text>
 
           <View style={styles.formContainer}>
