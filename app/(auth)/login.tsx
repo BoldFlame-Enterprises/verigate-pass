@@ -42,12 +42,13 @@ export default function LoginScreen() {
     try {
       const normalizedEmail = storedEmail.toLowerCase().trim();
       const metadata = await OfflineSessionService.getMetadata(normalizedEmail);
-      const user = await DatabaseService.getUserByEmail(normalizedEmail);
-      if (!metadata || !user || (metadata.mode === 'demo' && !DEMO_MODE)) return;
+      if (!metadata || (metadata.mode === 'demo' && !DEMO_MODE)) return;
       const eventId = metadata.mode === 'production'
         ? await SyncService.getCurrentEventId()
         : metadata.eventId;
       if (eventId == null) return;
+      const user = await DatabaseService.getUserByEmail(normalizedEmail, eventId);
+      if (!user) return;
       const deviceId = await SyncService.getDeviceId();
       const credential = metadata.mode === 'production'
         ? await DatabaseService.getQrCredential(eventId, user.id)
@@ -122,7 +123,7 @@ export default function LoginScreen() {
         eventId = sync.eventId;
         mode = 'production';
       }
-      const user = await DatabaseService.getUserByEmail(normalizedEmail);
+      const user = await DatabaseService.getUserByEmail(normalizedEmail, eventId);
 
       if (user) {
         const deviceId = await SyncService.getDeviceId();

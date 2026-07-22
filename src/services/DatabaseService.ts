@@ -88,7 +88,9 @@ class DatabaseServiceClass {
 
   private async computeIntegrityChecksum(): Promise<string> {
     const users = await this.getAllUsers();
-    const canonical = JSON.stringify(users.map((u) => ({ ...u })).sort((a, b) => a.id - b.id));
+    const canonical = JSON.stringify(users.map((u) => ({ ...u })).sort((a, b) =>
+      (a.event_id ?? 0) - (b.event_id ?? 0) || a.id - b.id
+    ));
     return Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, canonical);
   }
 
@@ -111,15 +113,17 @@ class DatabaseServiceClass {
 
     const createUsersTable = `
       CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY,
-        email TEXT UNIQUE NOT NULL,
+        id INTEGER NOT NULL,
+        event_id INTEGER NOT NULL DEFAULT 0,
+        email TEXT NOT NULL,
         name TEXT NOT NULL,
         phone TEXT NOT NULL,
-        event_id INTEGER DEFAULT 0,
         access_level TEXT NOT NULL,
         allowed_areas TEXT NOT NULL,
         assignments TEXT DEFAULT '[]',
-        is_active INTEGER DEFAULT 1
+        is_active INTEGER DEFAULT 1,
+        PRIMARY KEY (event_id, id),
+        UNIQUE (event_id, email)
       );
     `;
 
@@ -131,6 +135,7 @@ class DatabaseServiceClass {
     if (!columns.some((column) => column.name === 'assignments')) {
       await this.database.execAsync(`ALTER TABLE users ADD COLUMN assignments TEXT DEFAULT '[]'`);
     }
+    await this.migrateUsersToEventScopedIdentity();
     await this.database.execAsync(`
       CREATE TABLE IF NOT EXISTS qr_credentials (
         event_id INTEGER NOT NULL,
@@ -140,6 +145,45 @@ class DatabaseServiceClass {
         PRIMARY KEY (event_id, user_id)
       )
     `);
+  }
+
+  private async migrateUsersToEventScopedIdentity(): Promise<void> {
+    if (!this.database) throw new Error('Database not initialized');
+    const columns = await this.database.getAllAsync('PRAGMA table_info(users)') as {
+      name: string;
+      notnull: number;
+      pk: number;
+    }[];
+    const primaryKey = columns
+      .filter((column) => column.pk > 0)
+      .sort((left, right) => left.pk - right.pk)
+      .map((column) => column.name);
+    const eventColumn = columns.find((column) => column.name === 'event_id');
+    if (primaryKey.join(',') === 'event_id,id' && eventColumn?.notnull === 1) return;
+
+    await this.database.executeBatchAsync([
+      ['DROP TABLE IF EXISTS users_event_scoped'],
+      [`CREATE TABLE users_event_scoped (
+        id INTEGER NOT NULL,
+        event_id INTEGER NOT NULL DEFAULT 0,
+        email TEXT NOT NULL,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        access_level TEXT NOT NULL,
+        allowed_areas TEXT NOT NULL,
+        assignments TEXT DEFAULT '[]',
+        is_active INTEGER DEFAULT 1,
+        PRIMARY KEY (event_id, id),
+        UNIQUE (event_id, email)
+      )`],
+      [`INSERT INTO users_event_scoped
+        (id, event_id, email, name, phone, access_level, allowed_areas, assignments, is_active)
+       SELECT id, COALESCE(event_id, 0), email, name, phone, access_level, allowed_areas,
+              COALESCE(assignments, '[]'), is_active
+       FROM users`],
+      ['DROP TABLE users'],
+      ['ALTER TABLE users_event_scoped RENAME TO users'],
+    ]);
   }
 
   private async seedSampleData(): Promise<void> {
@@ -322,8 +366,8 @@ class DatabaseServiceClass {
     }
 
     const insertQuery = `
-      INSERT OR IGNORE INTO users (email, name, phone, access_level, allowed_areas, is_active) 
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO users (event_id, email, name, phone, access_level, allowed_areas, is_active)
+      VALUES (0, ?, ?, ?, ?, ?, ?)
     `;
 
     await this.database.runAsync(insertQuery, [
@@ -336,13 +380,13 @@ class DatabaseServiceClass {
     ]);
   }
 
-  async getUserByEmail(email: string): Promise<User | null> {
+  async getUserByEmail(email: string, eventId: number): Promise<User | null> {
     if (!this.database) {
       throw new Error('Database not initialized');
     }
 
-    const query = 'SELECT * FROM users WHERE email = ? AND is_active = 1';
-    const result = await this.database.getFirstAsync(query, [email]) as any;
+    const query = 'SELECT * FROM users WHERE event_id = ? AND email = ? AND is_active = 1';
+    const result = await this.database.getFirstAsync(query, [eventId, email]) as any;
 
     if (result) {
       return {
@@ -361,13 +405,15 @@ class DatabaseServiceClass {
     return null;
   }
 
-  async getAllUsers(): Promise<User[]> {
+  async getAllUsers(eventId?: number): Promise<User[]> {
     if (!this.database) {
       throw new Error('Database not initialized');
     }
 
-    const query = 'SELECT * FROM users WHERE is_active = 1';
-    const results = await this.database.getAllAsync(query) as any[];
+    const query = eventId == null
+      ? 'SELECT * FROM users WHERE is_active = 1'
+      : 'SELECT * FROM users WHERE event_id = ? AND is_active = 1';
+    const results = await this.database.getAllAsync(query, eventId == null ? [] : [eventId]) as any[];
 
     return results.map(row => ({
       id: row.id,
@@ -456,7 +502,7 @@ class DatabaseServiceClass {
   // Get demo users for display (without sensitive data)
   async getDemoUsers(): Promise<{email: string, name: string, access_level: string}[]> {
     try {
-      const users = await this.getAllUsers();
+      const users = await this.getAllUsers(0);
       return users.map(user => ({
         email: user.email,
         name: user.name,
@@ -469,9 +515,9 @@ class DatabaseServiceClass {
   }
 
   // Get access levels available in the system
-  async getAvailableAccessLevels(): Promise<string[]> {
+  async getAvailableAccessLevels(eventId: number): Promise<string[]> {
     try {
-      const users = await this.getAllUsers();
+      const users = await this.getAllUsers(eventId);
       const levels = [...new Set(users.map(user => user.access_level))];
       return levels.sort();
     } catch (error) {
@@ -481,9 +527,9 @@ class DatabaseServiceClass {
   }
 
   // Get areas available in the system
-  async getAvailableAreas(): Promise<string[]> {
+  async getAvailableAreas(eventId: number): Promise<string[]> {
     try {
-      const users = await this.getAllUsers();
+      const users = await this.getAllUsers(eventId);
       const allAreas = users.flatMap(user => user.allowed_areas);
       const uniqueAreas = [...new Set(allAreas)];
       return uniqueAreas.sort();
@@ -502,23 +548,24 @@ class DatabaseServiceClass {
       throw new Error('Database not initialized');
     }
 
+    const commands: Parameters<SQLite.SQLiteDatabase['executeBatchAsync']>[0] = [];
     for (const user of users) {
+      if (!Number.isInteger(user.event_id)) {
+        throw new Error(`Synchronized user ${user.id} is missing an event identity`);
+      }
+      const eventId = user.event_id as number;
       const assignments = user.assignments ?? [];
       const primaryAssignment = [...assignments].sort((a, b) => b.access_priority - a.access_priority)[0];
       const accessLevel = primaryAssignment?.access_level_name ?? user.access_level ?? 'general';
       const allowedAreas = assignments.length > 0
         ? [...new Set(assignments.map((assignment) => assignment.area_name))]
         : user.allowed_areas ?? [];
-      // A local demo-seeded row can hold this same email under a different
-      // (locally-generated) id. Since email is UNIQUE, upserting by id alone
-      // would violate that constraint in that case - clear the stale row first.
-      await this.database.runAsync(`DELETE FROM users WHERE email = ? AND id != ?`, [user.email, user.id]);
-
-      await this.database.runAsync(
+      commands.push(
+        ['DELETE FROM users WHERE event_id = ? AND email = ? AND id != ?', [eventId, user.email, user.id]],
+        [
         `INSERT INTO users (id, event_id, email, name, phone, access_level, allowed_areas, assignments, is_active)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           event_id = excluded.event_id,
+         ON CONFLICT(event_id, id) DO UPDATE SET
            email = excluded.email,
            name = excluded.name,
            phone = excluded.phone,
@@ -528,7 +575,7 @@ class DatabaseServiceClass {
            is_active = excluded.is_active`,
         [
           user.id,
-          user.event_id ?? 0,
+          eventId,
           user.email,
           user.name,
           user.phone,
@@ -536,20 +583,25 @@ class DatabaseServiceClass {
           JSON.stringify(allowedAreas),
           JSON.stringify(assignments),
           user.is_active ? 1 : 0,
+        ],
         ]
       );
     }
+    if (commands.length > 0) await this.database.executeBatchAsync(commands);
 
     // Sync is a legitimate data change - re-baseline the integrity checksum
     // so the next launch doesn't mistake this update for external tampering.
     await this.recordIntegrityChecksum();
   }
 
-  async getUserById(id: number): Promise<User | null> {
+  async getUserById(id: number, eventId: number): Promise<User | null> {
     if (!this.database) {
       throw new Error('Database not initialized');
     }
-    const result = (await this.database.getFirstAsync('SELECT * FROM users WHERE id = ?', [id])) as any;
+    const result = (await this.database.getFirstAsync(
+      'SELECT * FROM users WHERE event_id = ? AND id = ?',
+      [eventId, id]
+    )) as any;
     if (!result) return null;
     return {
       id: result.id,

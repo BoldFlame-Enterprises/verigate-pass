@@ -64,18 +64,19 @@ export default function QRDisplayScreen() {
   }, [generateQRData]);
 
   const loadSystemInfo = useCallback(async () => {
+    if (user?.event_id == null) return;
     try {
-      const areas = await DatabaseService.getAvailableAreas();
-      const levels = await DatabaseService.getAvailableAccessLevels();
+      const areas = await DatabaseService.getAvailableAreas(user.event_id);
+      const levels = await DatabaseService.getAvailableAccessLevels(user.event_id);
       if (mountedRef.current) setSystemInfo({ areas, levels });
     } catch (error) {
       console.error('Error loading system info:', error);
     }
-  }, []);
+  }, [user?.event_id]);
 
   const refreshSyncedState = useCallback(async () => {
-    if (!user) return;
-    const refreshed = await DatabaseService.getUserById(user.id);
+    if (!user || user.event_id == null) return;
+    const refreshed = await DatabaseService.getUserById(user.id, user.event_id);
     if (!mountedRef.current) return;
     if (refreshed) setUser(refreshed);
     await Promise.all([refreshQR(), loadSystemInfo()]);
