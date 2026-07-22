@@ -39,7 +39,7 @@ export default function QRDisplayScreen() {
     if (!user) return '';
 
     try {
-      const session = await OfflineSessionService.getValid(user.email);
+      const session = await OfflineSessionService.getMetadata(user.email);
       const eventId = (await SyncService.getCurrentEventId()) ?? session?.eventId ?? null;
       if (eventId == null) throw new Error('No bounded event session is selected');
       const credential = await DatabaseService.getQrCredential(eventId, user.id);

@@ -7,6 +7,7 @@ jest.mock('expo-application', () => ({
   getAndroidId: jest.fn(() => 'android-device'),
   getIosIdForVendorAsync: jest.fn(async () => 'ios-device'),
 }));
+jest.mock('expo-crypto', () => ({ randomUUID: jest.fn(() => 'fallback-device') }));
 jest.mock('react-native', () => ({
   AppState: {
     currentState: 'active',
@@ -15,7 +16,7 @@ jest.mock('react-native', () => ({
   Platform: { OS: 'android' },
 }));
 jest.mock('../ApiClient', () => ({
-  ApiClient: { isAuthenticated: jest.fn(() => true), request: jest.fn() },
+  ApiClient: { isAuthenticated: jest.fn(() => true), getTokenBinding: jest.fn(() => 'token-family-1'), request: jest.fn() },
 }));
 jest.mock('../DatabaseService', () => ({
   DatabaseService: {
@@ -27,6 +28,9 @@ jest.mock('../DatabaseService', () => ({
 }));
 jest.mock('../QrCredentialService', () => ({
   QrCredentialService: { getPublicKeySpkiBase64: jest.fn(async () => 'device-public-key') },
+}));
+jest.mock('../OfflineSessionService', () => ({
+  OfflineSessionService: { refreshProductionBinding: jest.fn(async () => undefined) },
 }));
 
 import { ApiClient } from '../ApiClient';

@@ -40,16 +40,32 @@ export default function LoginScreen() {
 
   const handleAutoLogin = useCallback(async (storedEmail: string) => {
     try {
-      const session = await OfflineSessionService.getValid(storedEmail);
-      if (!session || (session.mode === 'demo' && !DEMO_MODE)) return;
+      const normalizedEmail = storedEmail.toLowerCase().trim();
+      const metadata = await OfflineSessionService.getMetadata(normalizedEmail);
+      const user = await DatabaseService.getUserByEmail(normalizedEmail);
+      if (!metadata || !user || (metadata.mode === 'demo' && !DEMO_MODE)) return;
+      const eventId = metadata.mode === 'production'
+        ? await SyncService.getCurrentEventId()
+        : metadata.eventId;
+      if (eventId == null) return;
+      const deviceId = await SyncService.getDeviceId();
+      const credential = metadata.mode === 'production'
+        ? await DatabaseService.getQrCredential(eventId, user.id)
+        : null;
+      const session = await OfflineSessionService.getValid({
+        userId: user.id,
+        email: normalizedEmail,
+        eventId,
+        deviceId,
+        tokenBinding: ApiClient.getTokenBinding(),
+        credentialVersion: credential?.payload.credential_version ?? null,
+      });
+      if (!session) return;
       if (await BiometricService.isEnabled()) {
         const ok = await BiometricService.authenticate('Unlock VeriGate Pass');
         if (!ok) return;
       }
-      const user = await DatabaseService.getUserByEmail(storedEmail.toLowerCase().trim());
-      if (user) {
-        await completeLogin(user);
-      }
+      await completeLogin(user);
     } catch (error) {
       console.error('Auto-login failed:', error);
     }
@@ -63,15 +79,10 @@ export default function LoginScreen() {
       const storedEmail = await DatabaseService.getStoredEmail();
       await ApiClient.loadTokens();
 
-      const session = storedEmail ? await OfflineSessionService.getValid(storedEmail) : null;
-      if (storedEmail && session) {
+      if (storedEmail) {
         setEmail(storedEmail);
         setRememberMe(true);
-
         await handleAutoLogin(storedEmail);
-      } else if (storedEmail) {
-        setEmail(storedEmail);
-        setRememberMe(true);
       }
     } catch (error) {
       console.error('Error loading stored credentials:', error);
@@ -114,7 +125,15 @@ export default function LoginScreen() {
       const user = await DatabaseService.getUserByEmail(normalizedEmail);
 
       if (user) {
-        await OfflineSessionService.create(user.id, normalizedEmail, eventId, mode);
+        const deviceId = await SyncService.getDeviceId();
+        const credential = mode === 'production'
+          ? await DatabaseService.getQrCredential(eventId, user.id)
+          : null;
+        await OfflineSessionService.create(user.id, normalizedEmail, eventId, mode, {
+          deviceId,
+          tokenBinding: ApiClient.getTokenBinding(),
+          credentialVersion: credential?.payload.credential_version ?? null,
+        });
         // Store credentials if remember me is enabled
         if (rememberMe) {
           await DatabaseService.storeUserCredentials(normalizedEmail, true);

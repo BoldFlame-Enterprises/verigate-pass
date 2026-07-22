@@ -1,13 +1,16 @@
 import * as SecureStore from 'expo-secure-store';
 import * as Application from 'expo-application';
+import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
 import { ApiClient } from './ApiClient';
 import { DatabaseService, User } from './DatabaseService';
 import { QrCredentialService, AuthorityCredential } from './QrCredentialService';
+import { OfflineSessionService } from './OfflineSessionService';
 
 const CURRENT_EVENT_ID_KEY = 'verigate_pass_event_id';
 const CURRENT_EVENT_NAME_KEY = 'verigate_pass_event_name';
 const LAST_SYNC_AT_KEY = 'verigate_pass_last_sync_at';
+const FALLBACK_DEVICE_ID_KEY = 'verigate_pass_fallback_device_id';
 
 interface RemoteEvent {
   id: number;
@@ -50,10 +53,18 @@ class SyncServiceClass {
 
   async getDeviceId(): Promise<string> {
     if (this.deviceId) return this.deviceId;
-    this.deviceId =
-      Platform.OS === 'android'
-        ? (Application.getAndroidId() ?? `pass-${Date.now()}`)
-        : ((await Application.getIosIdForVendorAsync()) ?? `pass-${Date.now()}`);
+    const platformId = Platform.OS === 'android'
+      ? Application.getAndroidId()
+      : await Application.getIosIdForVendorAsync();
+    if (platformId) {
+      this.deviceId = platformId;
+      return this.deviceId;
+    }
+    this.deviceId = await SecureStore.getItemAsync(FALLBACK_DEVICE_ID_KEY);
+    if (!this.deviceId) {
+      this.deviceId = `pass-${Crypto.randomUUID()}`;
+      await SecureStore.setItemAsync(FALLBACK_DEVICE_ID_KEY, this.deviceId);
+    }
     return this.deviceId;
   }
 
@@ -114,6 +125,7 @@ class SyncServiceClass {
         && currentCredential.payload.expires_at - now <= CREDENTIAL_RENEWAL_WINDOW_MS
         && now - currentCredential.payload.issued_at >= MINIMUM_CREDENTIAL_AGE_FOR_EARLY_RENEWAL_MS;
       const credentialRenewed = !credentialMatches || Boolean(shouldRenewSoon);
+      let activeCredential = currentCredential;
 
       if (credentialRenewed) {
         const devicePublicKey = await QrCredentialService.getPublicKeySpkiBase64();
@@ -125,6 +137,7 @@ class SyncServiceClass {
           },
         });
         await DatabaseService.storeQrCredential(qrData.credential);
+        activeCredential = qrData.credential;
       }
 
       if (event.ends_at) {
@@ -134,6 +147,18 @@ class SyncServiceClass {
       await SecureStore.setItemAsync(CURRENT_EVENT_ID_KEY, String(eventId));
       await SecureStore.setItemAsync(CURRENT_EVENT_NAME_KEY, event.name);
       await SecureStore.setItemAsync(LAST_SYNC_AT_KEY, String(Date.now()));
+
+      const tokenBinding = ApiClient.getTokenBinding();
+      if (tokenBinding && activeCredential) {
+        await OfflineSessionService.refreshProductionBinding({
+          userId: credentialData.user.id,
+          email: credentialData.user.email,
+          eventId,
+          deviceId,
+          tokenBinding,
+          credentialVersion: activeCredential.payload.credential_version,
+        });
+      }
 
       await ApiClient.request('/notifications/sync-heartbeat', {
         method: 'POST',
