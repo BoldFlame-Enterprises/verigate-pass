@@ -1,5 +1,5 @@
 // app/(main)/qr-display.tsx - QR Display screen
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import { router } from 'expo-router';
 import { useUser } from '@/context/UserContext';
 import { DatabaseService } from '@/services/DatabaseService';
 import { SyncService } from '@/services/SyncService';
+import { SyncScheduler } from '@/services/SyncScheduler';
 import { NotificationService } from '@/services/NotificationService';
 import { ApiClient } from '@/services/ApiClient';
 import { DEMO_MODE, QR_EXPIRY_WARNING_MS } from '@/config';
@@ -30,6 +31,9 @@ export default function QRDisplayScreen() {
   const [systemInfo, setSystemInfo] = useState<{areas: string[], levels: string[]}>({areas: [], levels: []});
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  const syncedStateRefreshRef = useRef<() => Promise<void>>(async () => undefined);
+  const authenticatedUserId = user?.id;
 
   const generateQRData = useCallback(async () => {
     if (!user) return '';
@@ -54,24 +58,61 @@ export default function QRDisplayScreen() {
 
   const refreshQR = useCallback(async () => {
     const newQrData = await generateQRData();
+    if (!mountedRef.current) return;
     setQrData(newQrData);
     setLastUpdated(new Date());
   }, [generateQRData]);
 
+  const loadSystemInfo = useCallback(async () => {
+    try {
+      const areas = await DatabaseService.getAvailableAreas();
+      const levels = await DatabaseService.getAvailableAccessLevels();
+      if (mountedRef.current) setSystemInfo({ areas, levels });
+    } catch (error) {
+      console.error('Error loading system info:', error);
+    }
+  }, []);
+
+  const refreshSyncedState = useCallback(async () => {
+    if (!user) return;
+    const refreshed = await DatabaseService.getUserById(user.id);
+    if (!mountedRef.current) return;
+    if (refreshed) setUser(refreshed);
+    await Promise.all([refreshQR(), loadSystemInfo()]);
+  }, [user, setUser, refreshQR, loadSystemInfo]);
+
+  syncedStateRefreshRef.current = refreshSyncedState;
+
   const handleSyncNow = useCallback(async () => {
     if (!user) return;
     setIsSyncing(true);
-    const result = await SyncService.syncNow();
-    setIsSyncing(false);
-    if (result.success) {
-      setSyncStatus(`Synced your credential with ${result.eventName}`);
-      const refreshed = await DatabaseService.getUserById(user.id);
-      if (refreshed) setUser(refreshed);
-      refreshQR();
-    } else {
-      setSyncStatus(result.error ?? 'Sync unavailable offline');
+    try {
+      const result = await SyncScheduler.syncNow();
+      if (!mountedRef.current) return;
+      if (result.success) {
+        setSyncStatus(`Synced your credential with ${result.eventName}`);
+      } else {
+        setSyncStatus(result.error ?? 'Sync unavailable offline');
+      }
+    } finally {
+      if (mountedRef.current) setIsSyncing(false);
     }
-  }, [user, setUser, refreshQR]);
+  }, [user]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authenticatedUserId || !ApiClient.isAuthenticated()) return;
+    SyncScheduler.start({
+      onSuccess: () => syncedStateRefreshRef.current(),
+    });
+    return () => SyncScheduler.stop();
+  }, [authenticatedUserId]);
 
   useEffect(() => {
     refreshQR();
@@ -83,17 +124,7 @@ export default function QRDisplayScreen() {
     }, 30 * 1000);
 
     return () => clearInterval(interval);
-  }, [refreshQR]);
-
-  const loadSystemInfo = async () => {
-    try {
-      const areas = await DatabaseService.getAvailableAreas();
-      const levels = await DatabaseService.getAvailableAccessLevels();
-      setSystemInfo({ areas, levels });
-    } catch (error) {
-      console.error('Error loading system info:', error);
-    }
-  };
+  }, [refreshQR, loadSystemInfo]);
 
   const handleLogout = () => {
     Alert.alert(
@@ -105,6 +136,7 @@ export default function QRDisplayScreen() {
           text: 'Logout',
           style: 'destructive',
           onPress: async () => {
+            SyncScheduler.stop();
             // Clear stored credentials and tokens
             await DatabaseService.clearStoredCredentials();
             await DatabaseService.clearUserToken();

@@ -7,11 +7,13 @@ import { ApiClient } from '@/services/ApiClient';
 import { NotificationService } from '@/services/NotificationService';
 import SecurityGate from '@/components/SecurityGate';
 import { OfflineSessionService } from '@/services/OfflineSessionService';
+import { SyncScheduler } from '@/services/SyncScheduler';
 
 export default function MainLayout() {
   const { user, setUser } = useUser();
 
   const handleAutoLogout = useCallback(async () => {
+    SyncScheduler.stop();
     await DatabaseService.clearStoredCredentials();
     await DatabaseService.clearUserToken();
     await ApiClient.clearTokens();
