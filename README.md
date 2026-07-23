@@ -9,9 +9,9 @@ The mobile app event attendees use to display their signed, device-bound QR code
 - **Screen-capture protection**: `expo-screen-capture` blocks screenshots/screen recording app-wide.
 - **Backgrounding protection + auto-logout**: a blur overlay covers the screen the instant the app backgrounds (`expo-blur`), and the session is force-logged-out after 5 minutes of inactivity or backgrounding.
 - **Biometric login**: optional Face ID / fingerprint unlock (`expo-local-authentication`) for a remembered session, credentials held in `expo-secure-store`.
-- **Live event sync**: production login authenticates against the backend and downloads only the caller's assignment-rich event projection. Blank-password local data is available only when `EXPO_PUBLIC_DEMO_MODE=true`.
+- **Foreground event sync**: production login authenticates against the backend and downloads the caller's complete assignment-rich event projection. While the authenticated screen is active, the scheduler polls at a nominal 10-second cadence and uses bounded backoff/jitter after failure. Background execution is not supported; manual sync remains available. Blank-password local data is available only when `EXPO_PUBLIC_DEMO_MODE=true`.
 - **Access-level indicator + permitted areas**: badge and detail view showing the user's access level, permitted/restricted areas, and QR validity.
-- **Notifications**: local QR-expiry reminders (`expo-notifications`) always work; Android devices also register for real backend-triggered push (e.g. "your access changed") the moment a `google-services.json` is present (see below) - iOS push is implemented backend-side but gated off by default (requires a paid Apple Developer account).
+- **Notifications**: local QR-expiry reminders use `expo-notifications`. Authenticated provider registration stores the raw token locally; manual and inactivity logout attempt backend/native unregistration, cancel reminders, remove the response listener, and clear the stored token without blocking logout on network failure.
 
 ## 🛠️ Tech Stack (as actually built)
 
@@ -38,7 +38,7 @@ eas build --profile development --platform android
 
 ## ⚙️ Configuration
 
-Set `EXPO_PUBLIC_API_URL` (or `expo.extra.apiBaseUrl` in `app.json`) to your backend's `/api` URL. To enable Android push notifications, drop a free Firebase `google-services.json` into the project root before building - `app.config.js` picks it up automatically if present and is a no-op if it's absent.
+Set `EXPO_PUBLIC_API_URL` (or `expo.extra.apiBaseUrl` in `app.json`) to your backend's `/api` URL. Android provider configuration may use `google-services.json`; treat that Firebase client configuration as public configuration and restrict its Firebase services rather than treating it as a private signing key. Private local EAS/signing/provider files such as `credentials.json`, `*.jks`, `*.p8`, `*.p12`, and `*.mobileprovision` are ignored.
 
 ## 📦 Scripts
 
@@ -47,8 +47,8 @@ Set `EXPO_PUBLIC_API_URL` (or `expo.extra.apiBaseUrl` in `app.json`) to your bac
 - `npm run prebuild` — generate native projects (required once before `expo run:*` or local EAS builds)
 - `npm run build:android` / `npm run build:ios` — EAS cloud builds
 - `npm run type-check` / `npm run lint` / `npm run doctor` — static validation
-- `npm test` — non-watch Jest runner (no test files are committed yet)
+- `npm test` — run the committed service/contract tests without watch mode
 
-## Future work
+## Validation boundary
 
-- iOS remote push (APNs) is fully implemented on the backend and gated behind `APNS_ENABLED=false` by default - it requires an Apple Developer Program membership. Flip the flag and configure `APNS_*` env vars on the backend to turn it on; no app-side changes are needed.
+Repository release evidence covers signed Android cloud build/publication for an exact source revision. It does not prove installation, physical-device notification cleanup/delivery, background/process-kill behavior, or any iOS/APNs behavior. APNs remains gated off by default and requires separate provider/device validation.

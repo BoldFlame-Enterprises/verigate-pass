@@ -1,4 +1,5 @@
 import * as Notifications from 'expo-notifications';
+import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { ApiClient } from './ApiClient';
 import { SyncService } from './SyncService';
@@ -14,6 +15,12 @@ Notifications.setNotificationHandler({
 });
 
 const QR_EXPIRY_NOTIFICATION_ID = 'qr-expiry-reminder';
+const REGISTERED_PUSH_TOKEN_KEY = 'verigate_pass_registered_push_token';
+
+export interface NotificationCleanupResult {
+  backendUnregistered: boolean;
+  nativeUnregistered: boolean;
+}
 
 class NotificationServiceClass {
   private responseListener: Notifications.Subscription | null = null;
@@ -23,6 +30,7 @@ class NotificationServiceClass {
    * pushed. iOS registration is a no-op unless the backend has APNs enabled -
    * the app always tries local notifications regardless of remote push. */
   async init(): Promise<void> {
+    this.teardown();
     const { status } = await Notifications.requestPermissionsAsync();
     if (status !== 'granted') {
       console.warn('Notification permission not granted - local reminders disabled');
@@ -48,6 +56,7 @@ class NotificationServiceClass {
 
   teardown(): void {
     this.responseListener?.remove();
+    this.responseListener = null;
   }
 
   private async registerDeviceToken(): Promise<void> {
@@ -64,6 +73,7 @@ class NotificationServiceClass {
         method: 'POST',
         body: { event_id: eventId, token: tokenResponse.data, platform },
       });
+      await SecureStore.setItemAsync(REGISTERED_PUSH_TOKEN_KEY, tokenResponse.data);
     } catch (error) {
       // Device push registration is best-effort (e.g. no Google Play
       // services on an emulator, or APNs not configured) - never blocks login.
@@ -91,6 +101,45 @@ class NotificationServiceClass {
 
   async cancelQrExpiryReminder(): Promise<void> {
     await Notifications.cancelScheduledNotificationAsync(QR_EXPIRY_NOTIFICATION_ID).catch(() => undefined);
+  }
+
+  /** Runs while ApiClient is still authenticated. Every cleanup step is
+   * best-effort so a provider or network failure never traps the user in a
+   * local session. */
+  async cleanupForLogout(): Promise<NotificationCleanupResult> {
+    await this.cancelQrExpiryReminder();
+    let backendUnregistered = false;
+    let nativeUnregistered = false;
+    let token: string | null = null;
+
+    try {
+      token = await SecureStore.getItemAsync(REGISTERED_PUSH_TOKEN_KEY);
+    } catch {
+      token = null;
+    }
+
+    if (token && ApiClient.isAuthenticated()) {
+      try {
+        await ApiClient.request('/notifications/unregister-device', {
+          method: 'POST',
+          body: { token },
+        });
+        backendUnregistered = true;
+      } catch {
+        // Continue with native and local cleanup while offline.
+      }
+    }
+
+    try {
+      await Notifications.unregisterForNotificationsAsync();
+      nativeUnregistered = true;
+    } catch {
+      // Provider cleanup is best-effort and must not block local logout.
+    }
+
+    this.teardown();
+    await SecureStore.deleteItemAsync(REGISTERED_PUSH_TOKEN_KEY).catch(() => undefined);
+    return { backendUnregistered, nativeUnregistered };
   }
 }
 

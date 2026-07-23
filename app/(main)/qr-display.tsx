@@ -138,12 +138,12 @@ export default function QRDisplayScreen() {
           style: 'destructive',
           onPress: async () => {
             SyncScheduler.stop();
+            await NotificationService.cleanupForLogout();
             // Clear stored credentials and tokens
             await DatabaseService.clearStoredCredentials();
             await DatabaseService.clearUserToken();
             await ApiClient.clearTokens();
             await OfflineSessionService.clear();
-            await NotificationService.cancelQrExpiryReminder();
 
             setUser(null);
             router.replace('/(auth)/login');
