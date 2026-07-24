@@ -52,3 +52,9 @@ Set `EXPO_PUBLIC_API_URL` (or `expo.extra.apiBaseUrl` in `app.json`) to your bac
 ## Validation boundary
 
 Repository release evidence covers signed Android cloud build/publication for an exact source revision. It does not prove installation, physical-device notification cleanup/delivery, background/process-kill behavior, or any iOS/APNs behavior. APNs remains gated off by default and requires separate provider/device validation.
+
+Pass and backend revisions must be inventoried before a database rollout.
+Repository validation does not establish that a particular mobile build is
+installed. Follow the aggregate repository's
+`docs/database-operations.md` compatibility, restore, and observation gates
+before changing a shared backend schema.
