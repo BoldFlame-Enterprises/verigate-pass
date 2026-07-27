@@ -21,6 +21,7 @@ import { NotificationService } from '@/services/NotificationService';
 import { BiometricService } from '@/services/BiometricService';
 import { OfflineSessionService } from '@/services/OfflineSessionService';
 import { DEMO_MODE } from '@/config';
+import { DeviceControlService } from '@/services/DeviceControlService';
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -62,6 +63,14 @@ export default function LoginScreen() {
         credentialVersion: credential?.payload.credential_version ?? null,
       });
       if (!session) return;
+      if (metadata.mode === 'production') {
+        const deviceState = await DeviceControlService.checkConnectedState();
+        if (deviceState.status === 'revoked') {
+          const notice = await DeviceControlService.consumeNotice();
+          Alert.alert('Device de-registered', notice?.message ?? 'Please log in again to re-register this app.');
+          return;
+        }
+      }
       if (await BiometricService.isEnabled()) {
         const ok = await BiometricService.authenticate('Unlock VeriGate Pass');
         if (!ok) return;
@@ -79,6 +88,13 @@ export default function LoginScreen() {
 
       const storedEmail = await DatabaseService.getStoredEmail();
       await ApiClient.loadTokens();
+      const notice = await DeviceControlService.consumeNotice();
+      if (notice) {
+        Alert.alert(
+          notice.reason === 'blacklisted' ? 'Device blacklisted' : 'Device de-registered',
+          notice.message
+        );
+      }
 
       if (storedEmail) {
         setEmail(storedEmail);

@@ -3,6 +3,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { ApiClient } from './ApiClient';
 import { SyncService } from './SyncService';
+import { DeviceControlService } from './DeviceControlService';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -44,10 +45,13 @@ class NotificationServiceClass {
       });
     }
 
-    this.responseListener = Notifications.addNotificationResponseReceivedListener((response) => {
+    this.responseListener = Notifications.addNotificationResponseReceivedListener(async (response) => {
       const data = response.notification.request.content.data as { type?: string };
-      if (data?.type === 'access_change') {
-        SyncService.syncNow().catch(() => undefined);
+      if (data?.type === 'access_change' || data?.type === 'device_control') {
+        const state = await DeviceControlService.checkConnectedState();
+        if (state.status === 'active' && data.type === 'access_change') {
+          await SyncService.syncNow().catch(() => undefined);
+        }
       }
     });
 

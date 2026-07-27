@@ -1,6 +1,7 @@
 // app/(main)/_layout.tsx - Main app layout
 import { Stack, router } from 'expo-router';
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
+import { AppState } from 'react-native';
 import { useUser } from '@/context/UserContext';
 import { DatabaseService } from '@/services/DatabaseService';
 import { ApiClient } from '@/services/ApiClient';
@@ -8,6 +9,7 @@ import { NotificationService } from '@/services/NotificationService';
 import SecurityGate from '@/components/SecurityGate';
 import { OfflineSessionService } from '@/services/OfflineSessionService';
 import { SyncScheduler } from '@/services/SyncScheduler';
+import { DeviceControlService } from '@/services/DeviceControlService';
 
 export default function MainLayout() {
   const { user, setUser } = useUser();
@@ -22,6 +24,34 @@ export default function MainLayout() {
     setUser(null);
     router.replace('/(auth)/login');
   }, [setUser]);
+
+  const finishDeviceRevocation = useCallback(async () => {
+    SyncScheduler.stop();
+    await NotificationService.cleanupForLogout();
+    await DatabaseService.clearStoredCredentials();
+    await DatabaseService.clearUserToken();
+    setUser(null);
+    router.replace('/(auth)/login');
+  }, [setUser]);
+
+  useEffect(() => DeviceControlService.subscribe(() => finishDeviceRevocation()), [
+    finishDeviceRevocation,
+  ]);
+
+  useEffect(() => {
+    let active = true;
+    const check = async () => {
+      if (active) await DeviceControlService.checkConnectedState();
+    };
+    void check();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void check();
+    });
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, [finishDeviceRevocation]);
 
   return (
     <SecurityGate enabled={!!user} onAutoLogout={handleAutoLogout}>

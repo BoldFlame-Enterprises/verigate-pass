@@ -15,6 +15,7 @@ interface AppStateSource {
 
 interface SchedulerCallbacks {
   onSuccess?: (result: SyncResult) => void | Promise<void>;
+  onDeviceRevoked?: (reason: NonNullable<SyncResult['deviceControlReason']>) => void | Promise<void>;
 }
 
 export class ForegroundSyncScheduler {
@@ -75,6 +76,15 @@ export class ForegroundSyncScheduler {
     this.inFlight = this.synchronize()
       .then(async (result) => {
         this.consecutiveFailures = result.success ? 0 : this.consecutiveFailures + 1;
+        if (
+          result.deviceControlReason &&
+          this.running &&
+          lifecycle === this.lifecycle
+        ) {
+          await Promise.resolve(
+            this.callbacks.onDeviceRevoked?.(result.deviceControlReason)
+          ).catch(() => undefined);
+        }
         if (result.success && this.running && lifecycle === this.lifecycle && this.activeState === 'active') {
           await Promise.resolve(this.callbacks.onSuccess?.(result)).catch(() => undefined);
         }

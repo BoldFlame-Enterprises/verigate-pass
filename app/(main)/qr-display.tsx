@@ -20,6 +20,7 @@ import { ApiClient } from '@/services/ApiClient';
 import { DEMO_MODE, QR_EXPIRY_WARNING_MS } from '@/config';
 import { QrCredentialService } from '@/services/QrCredentialService';
 import { OfflineSessionService } from '@/services/OfflineSessionService';
+import { DeviceControlService } from '@/services/DeviceControlService';
 
 const { width } = Dimensions.get('window');
 const QR_SIZE = width * 0.7;
@@ -34,6 +35,11 @@ export default function QRDisplayScreen() {
   const mountedRef = useRef(true);
   const syncedStateRefreshRef = useRef<() => Promise<void>>(async () => undefined);
   const authenticatedUserId = user?.id;
+  const handleDeviceRevoked = useCallback(async (
+    reason: 'deregistered' | 'blacklisted'
+  ) => {
+    await DeviceControlService.revoke(reason);
+  }, []);
 
   const generateQRData = useCallback(async () => {
     if (!user) return '';
@@ -92,13 +98,15 @@ export default function QRDisplayScreen() {
       if (!mountedRef.current) return;
       if (result.success) {
         setSyncStatus(`Synced your credential with ${result.eventName}`);
+      } else if (result.deviceControlReason) {
+        await handleDeviceRevoked(result.deviceControlReason);
       } else {
         setSyncStatus(result.error ?? 'Sync unavailable offline');
       }
     } finally {
       if (mountedRef.current) setIsSyncing(false);
     }
-  }, [user]);
+  }, [user, handleDeviceRevoked]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -111,9 +119,10 @@ export default function QRDisplayScreen() {
     if (!authenticatedUserId || !ApiClient.isAuthenticated()) return;
     SyncScheduler.start({
       onSuccess: () => syncedStateRefreshRef.current(),
+      onDeviceRevoked: handleDeviceRevoked,
     });
     return () => SyncScheduler.stop();
-  }, [authenticatedUserId]);
+  }, [authenticatedUserId, handleDeviceRevoked]);
 
   useEffect(() => {
     refreshQR();
