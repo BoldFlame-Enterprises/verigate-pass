@@ -5,6 +5,7 @@ import { User } from './DatabaseService';
 
 export const QR_PROTOCOL_VERSION = 'verigate-qr-v2';
 const PRIVATE_KEY = 'verigate_pass_presentation_private_key';
+const LOCAL_AUTHORITY_REVOKED_KEY = 'verigate_pass_local_authority_revoked';
 const SPKI_PREFIX = '3059301306072a8648ce3d020106082a8648ce3d030107034200';
 
 export interface CredentialAssignment {
@@ -70,6 +71,23 @@ async function digest(value: unknown): Promise<Uint8Array> {
 }
 
 class QrCredentialServiceClass {
+  async revokeLocalAuthority(): Promise<void> {
+    await Promise.all([
+      SecureStore.deleteItemAsync(PRIVATE_KEY),
+      SecureStore.setItemAsync(LOCAL_AUTHORITY_REVOKED_KEY, 'true'),
+    ]);
+  }
+
+  async allowRegisteredAuthority(): Promise<void> {
+    await SecureStore.deleteItemAsync(LOCAL_AUTHORITY_REVOKED_KEY);
+  }
+
+  private async requireLocallyAuthorized(): Promise<void> {
+    if (await SecureStore.getItemAsync(LOCAL_AUTHORITY_REVOKED_KEY)) {
+      throw new Error('Device registration is required before creating a QR presentation');
+    }
+  }
+
   private async privateKey(): Promise<string> {
     const stored = await SecureStore.getItemAsync(PRIVATE_KEY);
     if (stored && p256.utils.isValidPrivateKey(stored)) return stored;
@@ -89,6 +107,7 @@ class QrCredentialServiceClass {
   }
 
   async createPresentation(credential: AuthorityCredential, now = Date.now()): Promise<string> {
+    await this.requireLocallyAuthorized();
     if (credential.payload.expires_at <= now) throw new Error('Credential has expired; sync is required');
     const payload = {
       version: QR_PROTOCOL_VERSION,

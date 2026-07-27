@@ -1,16 +1,18 @@
 import * as SecureStore from 'expo-secure-store';
-import * as Application from 'expo-application';
-import * as Crypto from 'expo-crypto';
 import { Platform } from 'react-native';
-import { ApiClient } from './ApiClient';
+import {
+  ApiClient,
+  deviceControlReason,
+  DeviceControlReason,
+} from './ApiClient';
 import { DatabaseService, User } from './DatabaseService';
 import { QrCredentialService, AuthorityCredential } from './QrCredentialService';
 import { OfflineSessionService } from './OfflineSessionService';
+import { DeviceIdentityService } from './DeviceIdentityService';
 
 const CURRENT_EVENT_ID_KEY = 'verigate_pass_event_id';
 const CURRENT_EVENT_NAME_KEY = 'verigate_pass_event_name';
 const LAST_SYNC_AT_KEY = 'verigate_pass_last_sync_at';
-const FALLBACK_DEVICE_ID_KEY = 'verigate_pass_fallback_device_id';
 
 interface RemoteEvent {
   id: number;
@@ -25,6 +27,7 @@ export interface SyncResult {
   eventName?: string;
   userCount?: number;
   credentialRenewed?: boolean;
+  deviceControlReason?: DeviceControlReason;
   error?: string;
 }
 
@@ -48,24 +51,10 @@ function sameAssignments(left: AuthorityCredential['payload']['assignments'], ri
 }
 
 class SyncServiceClass {
-  private deviceId: string | null = null;
   private inFlight: Promise<SyncResult> | null = null;
 
   async getDeviceId(): Promise<string> {
-    if (this.deviceId) return this.deviceId;
-    const platformId = Platform.OS === 'android'
-      ? Application.getAndroidId()
-      : await Application.getIosIdForVendorAsync();
-    if (platformId) {
-      this.deviceId = platformId;
-      return this.deviceId;
-    }
-    this.deviceId = await SecureStore.getItemAsync(FALLBACK_DEVICE_ID_KEY);
-    if (!this.deviceId) {
-      this.deviceId = `pass-${Crypto.randomUUID()}`;
-      await SecureStore.setItemAsync(FALLBACK_DEVICE_ID_KEY, this.deviceId);
-    }
-    return this.deviceId;
+    return DeviceIdentityService.getOrCreate();
   }
 
   async getCurrentEventId(): Promise<number | null> {
@@ -105,13 +94,21 @@ class SyncServiceClass {
       let eventId = await this.getCurrentEventId();
       let event = events.find((e) => e.id === eventId) ?? events[0];
       eventId = event.id;
+      const deviceId = await this.getDeviceId();
+      if (!ApiClient.hasDeviceSession()) {
+        await ApiClient.registerDeviceSession(
+          eventId,
+          deviceId,
+          Platform.OS === 'ios' ? 'ios' : 'android'
+        );
+        await QrCredentialService.allowRegisteredAuthority();
+      }
 
       const credentialData = await ApiClient.request<{ contract_version: string; user: User }>('/sync/my-credential', {
         params: { event_id: eventId },
       });
       await DatabaseService.upsertSyncedUsers([credentialData.user]);
 
-      const deviceId = await this.getDeviceId();
       const currentCredential = await DatabaseService.getQrCredential?.(eventId, credentialData.user.id) ?? null;
       const now = Date.now();
       const credentialMatches = currentCredential
@@ -167,7 +164,12 @@ class SyncServiceClass {
 
       return { success: true, eventId, eventName: event.name, userCount: 1, credentialRenewed };
     } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : 'Sync failed' };
+      const reason = deviceControlReason(error);
+      return {
+        success: false,
+        ...(reason ? { deviceControlReason: reason } : {}),
+        error: error instanceof Error ? error.message : 'Sync failed',
+      };
     }
   }
 }
