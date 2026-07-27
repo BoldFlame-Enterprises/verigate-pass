@@ -10,7 +10,21 @@ jest.mock('expo-application', () => ({
 jest.mock('expo-crypto', () => ({ randomUUID: jest.fn(() => 'fallback-device') }));
 jest.mock('react-native', () => ({ Platform: { OS: 'android' } }));
 jest.mock('../ApiClient', () => ({
-  ApiClient: { isAuthenticated: jest.fn(() => true), getTokenBinding: jest.fn(() => 'token-family-1'), request: jest.fn() },
+  ApiClient: {
+    isAuthenticated: jest.fn(() => true),
+    hasDeviceSession: jest.fn(() => false),
+    getTokenBinding: jest.fn(() => 'token-family-1'),
+    registerDeviceSession: jest.fn(async () => ({
+      id: 9,
+      event_id: 8,
+      app: 'pass',
+      installation_id: 'pass-installation',
+      state: 'active',
+      session_generation: 1,
+      version: 1,
+    })),
+    request: jest.fn(),
+  },
 }));
 jest.mock('../DatabaseService', () => ({
   DatabaseService: {
@@ -21,10 +35,16 @@ jest.mock('../DatabaseService', () => ({
   },
 }));
 jest.mock('../QrCredentialService', () => ({
-  QrCredentialService: { getPublicKeySpkiBase64: jest.fn(async () => 'device-public-key') },
+  QrCredentialService: {
+    getPublicKeySpkiBase64: jest.fn(async () => 'device-public-key'),
+    allowRegisteredAuthority: jest.fn(async () => undefined),
+  },
 }));
 jest.mock('../OfflineSessionService', () => ({
   OfflineSessionService: { refreshProductionBinding: jest.fn(async () => undefined) },
+}));
+jest.mock('../DeviceIdentityService', () => ({
+  DeviceIdentityService: { getOrCreate: jest.fn(async () => 'pass-installation') },
 }));
 
 import { ApiClient } from '../ApiClient';
@@ -52,6 +72,11 @@ describe('SyncService', () => {
     const result = await SyncService.syncNow();
 
     expect(result.success).toBe(true);
+    expect(ApiClient.registerDeviceSession).toHaveBeenCalledWith(
+      8,
+      'pass-installation',
+      'android'
+    );
     expect(ApiClient.request).toHaveBeenCalledWith('/sync/my-credential', { params: { event_id: 8 } });
     expect(ApiClient.request).not.toHaveBeenCalledWith('/sync/users-database', expect.anything());
     expect(DatabaseService.upsertSyncedUsers).toHaveBeenCalledWith([user]);
@@ -60,7 +85,7 @@ describe('SyncService', () => {
       userId: 5,
       email: 'self@example.com',
       eventId: 8,
-      deviceId: 'android-device',
+      deviceId: 'pass-installation',
       tokenBinding: 'token-family-1',
       credentialVersion: 'credential-v1',
     });

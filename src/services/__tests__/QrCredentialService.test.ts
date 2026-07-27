@@ -4,6 +4,7 @@ const mockSecureStore = new Map<string, string>();
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async (key: string) => mockSecureStore.get(key) ?? null),
   setItemAsync: jest.fn(async (key: string, value: string) => { mockSecureStore.set(key, value); }),
+  deleteItemAsync: jest.fn(async (key: string) => { mockSecureStore.delete(key); }),
 }));
 
 jest.mock('expo-crypto', () => ({
@@ -55,5 +56,15 @@ describe('QrCredentialService', () => {
   it('does not present an expired authority credential', async () => {
     await expect(QrCredentialService.createPresentation(credential(9_999), 10_000))
       .rejects.toThrow('Credential has expired');
+  });
+
+  it('makes cached credentials unusable until a successful re-registration', async () => {
+    await QrCredentialService.revokeLocalAuthority();
+    await expect(QrCredentialService.createPresentation(credential(100_000), 10_000))
+      .rejects.toThrow(/registration is required/i);
+
+    await QrCredentialService.allowRegisteredAuthority();
+    await expect(QrCredentialService.createPresentation(credential(100_000), 10_000))
+      .resolves.toEqual(expect.any(String));
   });
 });

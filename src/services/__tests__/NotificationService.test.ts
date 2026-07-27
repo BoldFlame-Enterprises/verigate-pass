@@ -29,10 +29,17 @@ jest.mock('../ApiClient', () => ({
 jest.mock('../SyncService', () => ({
   SyncService: { getCurrentEventId: jest.fn(async () => 7), syncNow: jest.fn(async () => ({ success: true })) },
 }));
+jest.mock('../DeviceControlService', () => ({
+  DeviceControlService: {
+    checkConnectedState: jest.fn(async () => ({ status: 'active' })),
+  },
+}));
 
 import * as Notifications from 'expo-notifications';
 import { ApiClient } from '../ApiClient';
 import { NotificationService } from '../NotificationService';
+import { DeviceControlService } from '../DeviceControlService';
+import { SyncService } from '../SyncService';
 
 describe('NotificationService lifecycle', () => {
   beforeEach(() => {
@@ -71,5 +78,21 @@ describe('NotificationService lifecycle', () => {
     expect(mockFirstListener.remove).toHaveBeenCalledTimes(1);
     expect(mockStore.has('verigate_pass_registered_push_token')).toBe(false);
     expect(result).toEqual({ backendUnregistered: false, nativeUnregistered: true });
+  });
+
+  it('checks authoritative device state before reacting to a push', async () => {
+    await NotificationService.init();
+    const listener = jest.mocked(
+      Notifications.addNotificationResponseReceivedListener
+    ).mock.calls[0][0];
+
+    await listener({
+      notification: {
+        request: { content: { data: { type: 'device_control' } } },
+      },
+    } as never);
+
+    expect(DeviceControlService.checkConnectedState).toHaveBeenCalledTimes(1);
+    expect(SyncService.syncNow).not.toHaveBeenCalled();
   });
 });

@@ -64,4 +64,77 @@ describe('ApiClient token binding', () => {
     expect(ApiClient.getTokenBinding()).toBeNull();
     expect(mockStore.has('verigate_pass_token_binding')).toBe(false);
   });
+
+  it('exchanges an account token for an event-bound Pass device session', async () => {
+    jest.mocked(global.fetch)
+      .mockResolvedValueOnce(response(200, {
+        success: true,
+        data: {
+          user: { id: 1, email: 'user@example.com', name: 'User', phone: '1', role: 'user', is_active: true },
+          accessToken: 'account-access',
+          refreshToken: 'account-refresh',
+        },
+      }) as never)
+      .mockResolvedValueOnce(response(201, {
+        success: true,
+        data: {
+          registration: {
+            id: 9,
+            event_id: 4,
+            app: 'pass',
+            installation_id: 'pass-installation',
+            state: 'active',
+            session_generation: 2,
+            version: 3,
+          },
+          accessToken: 'device-access',
+          refreshToken: 'device-refresh',
+        },
+      }) as never);
+
+    await ApiClient.login('user@example.com', 'password');
+    const registration = await ApiClient.registerDeviceSession(4, 'pass-installation', 'android');
+
+    expect(registration).toMatchObject({ id: 9, event_id: 4, app: 'pass' });
+    expect(ApiClient.hasDeviceSession()).toBe(true);
+    expect(global.fetch).toHaveBeenLastCalledWith(
+      expect.stringContaining('/devices/session'),
+      expect.objectContaining({
+        body: JSON.stringify({
+          event_id: 4,
+          app: 'pass',
+          installation_id: 'pass-installation',
+          platform: 'android',
+        }),
+      })
+    );
+  });
+
+  it('preserves structured device errors for centralized enforcement', async () => {
+    jest.mocked(global.fetch)
+      .mockResolvedValueOnce(response(200, {
+        success: true,
+        data: {
+          user: { id: 1, email: 'user@example.com', name: 'User', phone: '1', role: 'user', is_active: true },
+          accessToken: 'device-access',
+          refreshToken: 'device-refresh',
+        },
+      }) as never)
+      .mockResolvedValueOnce(response(401, {
+        success: false,
+        code: 'DEVICE_BLACKLISTED',
+        error: 'This device has been blacklisted',
+      }) as never)
+      .mockResolvedValueOnce(response(401, {
+        success: false,
+        code: 'DEVICE_BLACKLISTED',
+        error: 'This device has been blacklisted',
+      }) as never);
+
+    await ApiClient.login('user@example.com', 'password');
+    await expect(ApiClient.request('/devices/state')).rejects.toMatchObject({
+      status: 401,
+      code: 'DEVICE_BLACKLISTED',
+    });
+  });
 });

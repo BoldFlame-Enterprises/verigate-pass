@@ -16,7 +16,14 @@ jest.mock('react-native', () => ({
   Platform: { OS: 'android' },
 }));
 jest.mock('../ApiClient', () => ({
-  ApiClient: { isAuthenticated: jest.fn(() => true), getTokenBinding: jest.fn(() => 'token-family-1'), request: jest.fn() },
+  ApiClient: {
+    isAuthenticated: jest.fn(() => true),
+    hasDeviceSession: jest.fn(() => true),
+    getTokenBinding: jest.fn(() => 'token-family-1'),
+    registerDeviceSession: jest.fn(),
+    request: jest.fn(),
+  },
+  deviceControlReason: jest.fn(() => null),
 }));
 jest.mock('../DatabaseService', () => ({
   DatabaseService: {
@@ -27,10 +34,16 @@ jest.mock('../DatabaseService', () => ({
   },
 }));
 jest.mock('../QrCredentialService', () => ({
-  QrCredentialService: { getPublicKeySpkiBase64: jest.fn(async () => 'device-public-key') },
+  QrCredentialService: {
+    getPublicKeySpkiBase64: jest.fn(async () => 'device-public-key'),
+    allowRegisteredAuthority: jest.fn(async () => undefined),
+  },
 }));
 jest.mock('../OfflineSessionService', () => ({
   OfflineSessionService: { refreshProductionBinding: jest.fn(async () => undefined) },
+}));
+jest.mock('../DeviceIdentityService', () => ({
+  DeviceIdentityService: { getOrCreate: jest.fn(async () => 'pass-installation') },
 }));
 
 import { ApiClient } from '../ApiClient';
@@ -163,6 +176,26 @@ describe('ForegroundSyncScheduler', () => {
     expect(onSuccess).not.toHaveBeenCalled();
     expect(synchronize).toHaveBeenCalledTimes(1);
   });
+
+  it('notifies the lifecycle owner when a connected sync discovers revocation', async () => {
+    const synchronize = jest.fn(async () => ({
+      success: false,
+      deviceControlReason: 'blacklisted' as const,
+      error: 'This device has been blacklisted',
+    }));
+    const scheduler = new ForegroundSyncScheduler(
+      synchronize,
+      new FakeAppState(),
+      () => 0
+    );
+    const onDeviceRevoked = jest.fn();
+
+    scheduler.start({ onDeviceRevoked });
+    await flushPromises();
+
+    expect(onDeviceRevoked).toHaveBeenCalledWith('blacklisted');
+    scheduler.stop();
+  });
 });
 
 describe('SyncService credential renewal', () => {
@@ -207,7 +240,7 @@ describe('SyncService credential renewal', () => {
         email: user.email,
         name: user.name,
         event_id: 8,
-        device_id: 'android-device',
+        device_id: 'pass-installation',
         device_public_key: 'device-public-key',
         assignments: value,
         issued_at: Date.now() - 60_000,
@@ -238,7 +271,7 @@ describe('SyncService credential renewal', () => {
     expect(ApiClient.request).toHaveBeenCalledWith('/qr/generate', {
       params: {
         event_id: 8,
-        device_id: 'android-device',
+        device_id: 'pass-installation',
         device_public_key: 'device-public-key',
       },
     });
