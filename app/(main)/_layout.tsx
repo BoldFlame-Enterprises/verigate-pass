@@ -19,7 +19,7 @@ export default function MainLayout() {
     await NotificationService.cleanupForLogout();
     await DatabaseService.clearStoredCredentials();
     await DatabaseService.clearUserToken();
-    await ApiClient.clearTokens();
+    await ApiClient.logout();
     await OfflineSessionService.clear();
     setUser(null);
     router.replace('/(auth)/login');

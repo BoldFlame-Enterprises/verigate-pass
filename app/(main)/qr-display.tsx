@@ -151,7 +151,7 @@ export default function QRDisplayScreen() {
             // Clear stored credentials and tokens
             await DatabaseService.clearStoredCredentials();
             await DatabaseService.clearUserToken();
-            await ApiClient.clearTokens();
+            await ApiClient.logout();
             await OfflineSessionService.clear();
 
             setUser(null);

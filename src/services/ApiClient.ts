@@ -127,11 +127,24 @@ class ApiClientClass {
     ]);
   }
 
+  async logout(): Promise<void> {
+    try {
+      if (this.accessToken) {
+        await fetch(`${API_BASE_URL}/auth/logout`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${this.accessToken}` },
+        });
+      }
+    } finally {
+      await this.clearTokens();
+    }
+  }
+
   async login(email: string, password: string): Promise<BackendUser> {
     const response = await fetch(`${API_BASE_URL}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, client_kind: 'pass' }),
     });
     const json: APIResponse<{
       user: BackendUser;
