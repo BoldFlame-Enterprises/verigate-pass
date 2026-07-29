@@ -16,6 +16,22 @@ jest.mock('expo-crypto', () => ({
 }));
 
 import { AuthorityCredential, QrCredentialService, QR_PROTOCOL_VERSION } from '../QrCredentialService';
+import { p256 } from '@noble/curves/p256';
+import qrV3Fixture from '../__fixtures__/qr-v3-contract.json';
+
+function canonicalV3(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalV3).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value as Record<string, unknown>).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalV3((value as Record<string, unknown>)[key])}`
+    ).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function fixtureDigest(value: unknown): Uint8Array {
+  return jest.requireActual('crypto').createHash('sha256').update(canonicalV3(value)).digest();
+}
 
 function credential(expiresAt: number): AuthorityCredential {
   return {
@@ -66,5 +82,26 @@ describe('QrCredentialService', () => {
     await QrCredentialService.allowRegisteredAuthority();
     await expect(QrCredentialService.createPresentation(credential(100_000), 10_000))
       .resolves.toEqual(expect.any(String));
+  });
+
+  it('shares the fixed compact v3 golden vector and adverse matrix', () => {
+    const encoded = canonicalV3({
+      ...qrV3Fixture.valid.presentation_unsigned,
+      s: qrV3Fixture.valid.device_signature,
+    });
+    expect(p256.verify(
+      Buffer.from(qrV3Fixture.valid.authority_signature, 'base64url'),
+      fixtureDigest(qrV3Fixture.valid.credential_payload),
+      Buffer.from(qrV3Fixture.verification.authority_public_key, 'base64url')
+    )).toBe(true);
+    expect(p256.verify(
+      Buffer.from(qrV3Fixture.valid.device_signature, 'base64url'),
+      fixtureDigest(qrV3Fixture.valid.presentation_unsigned),
+      Buffer.from(qrV3Fixture.verification.device_public_key, 'base64url')
+    )).toBe(true);
+    expect(Buffer.byteLength(encoded)).toBe(535);
+    expect(qrV3Fixture.mutations).toHaveLength(23);
+    expect(qrV3Fixture.mutations.find(({ id }) => id === 'repeated-nonce'))
+      .toMatchObject({ decision: 'allow_and_correlate' });
   });
 });
