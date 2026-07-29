@@ -4,7 +4,16 @@ The mobile app event attendees use to display their signed, device-bound QR code
 
 ## 🚀 Features
 
-- **Signed, offline QR display**: the backend issues a P-256 event/device credential; Pass signs a rotating 60-second presentation with a per-installation SecureStore key.
+- **Signed, offline QR display**: the backend issues a compact v3 P-256
+  event/device credential; Pass signs a rotating presentation with a
+  per-installation SecureStore key. The nominal presentation lifetime is 60
+  seconds and verifiers allow up to 60 seconds of clock skew.
+- **Bounded rendering**: Pass preflights the installed encoder at error
+  correction `M` and refuses presentations above 800 UTF-8 bytes or QR version
+  20.
+- **Authority renewal**: foreground sync replaces the credential when its
+  authority key, registration generation, event, user, or expiry state is no
+  longer current.
 - **Bounded replay model**: screen-capture blocking reduces accidental sharing, but a copied presentation can be replayed during its short validity window; zero offline replay is not claimed.
 - **Screen-capture protection**: `expo-screen-capture` blocks screenshots/screen recording app-wide.
 - **Backgrounding protection + auto-logout**: a blur overlay covers the screen the instant the app backgrounds (`expo-blur`), and the session is force-logged-out after 5 minutes of inactivity or backgrounding.
@@ -55,6 +64,12 @@ Set `EXPO_PUBLIC_API_URL` (or `expo.extra.apiBaseUrl` in `app.json`) to your bac
 ## Validation boundary
 
 Repository release evidence covers signed Android cloud build/publication for an exact source revision. It does not prove installation, physical-device notification cleanup/delivery, background/process-kill behavior, or any iOS/APNs behavior. APNs remains gated off by default and requires separate provider/device validation.
+
+The source can replace a synchronized v2 credential with v3, but v2
+compatibility is not retired by repository validation. Retirement requires
+supported-client inventory, Pass/Scan rollout evidence, the maximum legacy
+credential and offline windows, physical camera validation, and an explicitly
+approved cutoff.
 
 Pass and backend revisions must be inventoried before a database rollout.
 Repository validation does not establish that a particular mobile build is
