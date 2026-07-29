@@ -3,7 +3,12 @@ import * as SQLite from './EncryptedSQLite';
 import * as SecureStore from 'expo-secure-store';
 import * as Crypto from 'expo-crypto';
 import { DEMO_MODE } from '../config';
-import type { AuthorityCredential, CredentialAssignment } from './QrCredentialService';
+import type {
+  CredentialAssignment,
+  LocallyStoredQrCredential,
+  QrAuthorityCredential,
+  QrCredentialContext,
+} from './QrCredentialService';
 
 export interface User {
   id: number;
@@ -616,8 +621,18 @@ class DatabaseServiceClass {
     };
   }
 
-  async storeQrCredential(credential: AuthorityCredential): Promise<void> {
+  async storeQrCredential(
+    credential: QrAuthorityCredential,
+    context?: QrCredentialContext
+  ): Promise<void> {
     if (!this.database) throw new Error('Database not initialized');
+    const isV3 = 'p' in credential && credential.p.v === 3;
+    if (isV3 && !context) throw new Error('v3 credential trust context is required');
+    const eventId = 'p' in credential ? credential.p.eid : credential.payload.event_id;
+    const userId = 'p' in credential ? credential.p.uid : credential.payload.user_id;
+    const expiresAt = 'p' in credential
+      ? credential.p.exp * 1_000
+      : credential.payload.expires_at;
     await this.database.runAsync(
       `INSERT INTO qr_credentials (event_id, user_id, credential, expires_at)
        VALUES (?, ?, ?, ?)
@@ -625,22 +640,57 @@ class DatabaseServiceClass {
          credential = excluded.credential,
          expires_at = excluded.expires_at`,
       [
-        credential.payload.event_id,
-        credential.payload.user_id,
-        JSON.stringify(credential),
-        credential.payload.expires_at,
+        eventId,
+        userId,
+        JSON.stringify(isV3 ? { credential, context } : credential),
+        expiresAt,
       ]
     );
   }
 
-  async getQrCredential(eventId: number, userId: number): Promise<AuthorityCredential | null> {
+  async getQrCredential(eventId: number, userId: number): Promise<LocallyStoredQrCredential | null> {
     if (!this.database) throw new Error('Database not initialized');
     const row = await this.database.getFirstAsync(
       'SELECT credential, expires_at FROM qr_credentials WHERE event_id = ? AND user_id = ?',
       [eventId, userId]
     ) as any;
     if (!row || Number(row.expires_at) <= Date.now()) return null;
-    return JSON.parse(row.credential) as AuthorityCredential;
+    const stored = JSON.parse(row.credential) as {
+      credential?: QrAuthorityCredential;
+    } | QrAuthorityCredential;
+    const credential = 'credential' in stored && stored.credential
+      ? stored.credential
+      : stored as QrAuthorityCredential;
+    if ('p' in credential) {
+      Object.defineProperty(credential, 'payload', {
+        configurable: true,
+        enumerable: false,
+        value: { credential_version: `v3:${credential.p.kid}:${credential.p.cg}` },
+      });
+    }
+    return credential as LocallyStoredQrCredential;
+  }
+
+  async getQrCredentialContext(
+    eventId: number,
+    userId: number
+  ): Promise<QrCredentialContext | null> {
+    if (!this.database) throw new Error('Database not initialized');
+    const row = await this.database.getFirstAsync(
+      'SELECT credential, expires_at FROM qr_credentials WHERE event_id = ? AND user_id = ?',
+      [eventId, userId]
+    ) as any;
+    if (!row || Number(row.expires_at) <= Date.now()) return null;
+    const stored = JSON.parse(row.credential) as {
+      credential?: QrAuthorityCredential;
+      context?: QrCredentialContext;
+    };
+    return stored.context ?? null;
+  }
+
+  async clearQrCredentials(): Promise<void> {
+    if (!this.database) return;
+    await this.database.execAsync('DELETE FROM qr_credentials');
   }
 
   // Reset demo data (for development/testing)

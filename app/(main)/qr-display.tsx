@@ -28,6 +28,7 @@ const QR_SIZE = width * 0.7;
 export default function QRDisplayScreen() {
   const { user, setUser } = useUser();
   const [qrData, setQrData] = useState('');
+  const [qrError, setQrError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [systemInfo, setSystemInfo] = useState<{areas: string[], levels: string[]}>({areas: [], levels: []});
   const [isSyncing, setIsSyncing] = useState(false);
@@ -44,29 +45,42 @@ export default function QRDisplayScreen() {
   const generateQRData = useCallback(async () => {
     if (!user) return '';
 
-    try {
-      const session = await OfflineSessionService.getMetadata(user.email);
-      const eventId = (await SyncService.getCurrentEventId()) ?? session?.eventId ?? null;
-      if (eventId == null) throw new Error('No bounded event session is selected');
-      const credential = await DatabaseService.getQrCredential(eventId, user.id);
-      if (!credential) {
-        if (DEMO_MODE) return QrCredentialService.createDemoPresentation(user, eventId);
-        throw new Error('No current signed credential; connect and sync');
-      }
-      const presentation = await QrCredentialService.createPresentation(credential);
-      NotificationService.scheduleQrExpiryReminder(credential.payload.expires_at, QR_EXPIRY_WARNING_MS).catch(() => undefined);
-      return presentation;
-    } catch (error) {
-      console.error('Error generating secure QR:', error);
-      return '';
+    const session = await OfflineSessionService.getMetadata(user.email);
+    const eventId = (await SyncService.getCurrentEventId()) ?? session?.eventId ?? null;
+    if (eventId == null) throw new Error('No bounded event session is selected');
+    const credential = await DatabaseService.getQrCredential(eventId, user.id);
+    if (!credential) {
+      if (DEMO_MODE) return QrCredentialService.createDemoPresentation(user, eventId);
+      throw new Error('No current signed credential; connect and sync');
     }
+    const context = await DatabaseService.getQrCredentialContext(eventId, user.id);
+    const presentation = await QrCredentialService.createPresentation(
+      credential,
+      Date.now(),
+      context ?? undefined
+    );
+    NotificationService.scheduleQrExpiryReminder(
+      QrCredentialService.credentialExpiresAtMs(credential),
+      QR_EXPIRY_WARNING_MS
+    ).catch(() => undefined);
+    return presentation;
   }, [user]);
 
   const refreshQR = useCallback(async () => {
-    const newQrData = await generateQRData();
-    if (!mountedRef.current) return;
-    setQrData(newQrData);
-    setLastUpdated(new Date());
+    try {
+      const newQrData = await generateQRData();
+      if (!mountedRef.current) return;
+      setQrData(newQrData);
+      setQrError(null);
+      setLastUpdated(new Date());
+    } catch (error) {
+      console.error('Error generating secure QR:', error);
+      if (!mountedRef.current) return;
+      setQrData('');
+      setQrError(error instanceof Error
+        ? error.message
+        : 'QR credential is unavailable; connect and sync');
+    }
   }, [generateQRData]);
 
   const loadSystemInfo = useCallback(async () => {
@@ -151,6 +165,7 @@ export default function QRDisplayScreen() {
             // Clear stored credentials and tokens
             await DatabaseService.clearStoredCredentials();
             await DatabaseService.clearUserToken();
+            await DatabaseService.clearQrCredentials();
             await ApiClient.logout();
             await OfflineSessionService.clear();
 
@@ -227,7 +242,9 @@ export default function QRDisplayScreen() {
             />
           ) : (
             <View style={[styles.qrPlaceholder, { width: QR_SIZE, height: QR_SIZE }]}>
-              <Text>Loading QR Code...</Text>
+              <Text style={qrError ? styles.qrErrorText : undefined}>
+                {qrError ?? 'Loading QR Code...'}
+              </Text>
             </View>
           )}
         </View>
@@ -343,6 +360,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#f3f4f6',
     borderRadius: 8,
+  },
+  qrErrorText: {
+    color: '#b91c1c',
+    padding: 20,
+    textAlign: 'center',
   },
   lastUpdated: {
     fontSize: 12,

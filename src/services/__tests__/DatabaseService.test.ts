@@ -173,4 +173,54 @@ describe('DatabaseService event-scoped users', () => {
 
     expect(executeBatch).toHaveBeenCalledWith(commands);
   });
+
+  it('stores compact v3 credentials with their validation context and clears them on revocation', async () => {
+    const database = createDatabaseDouble();
+    const expiresAt = Math.floor(Date.now() / 1_000) + 86_400;
+    const credential = {
+      p: {
+        v: 3 as const,
+        kid: 'qr-active',
+        cid: 'ABEiM0RVZneImaq7zN3u_w',
+        cg: 2,
+        uid: 5,
+        eid: 11,
+        did: 'pass-550e8400-e29b-41d4-a716-446655440000',
+        rg: 3,
+        dpk: 'device-key',
+        iat: expiresAt - 86_400,
+        exp: expiresAt,
+      },
+      s: 'signature',
+    };
+    const context = {
+      installation_id: credential.p.did,
+      registration_generation: 3,
+      active_authority_key: {
+        kid: 'qr-active',
+        public_key: 'authority-key',
+      },
+    };
+    database.getFirstAsync.mockResolvedValue({
+      credential: JSON.stringify({ credential, context }),
+      expires_at: expiresAt * 1_000,
+    });
+    service.database = database;
+
+    await DatabaseService.storeQrCredential(credential, context);
+    await expect(DatabaseService.getQrCredential(11, 5)).resolves.toMatchObject({
+      p: { kid: 'qr-active', cg: 2 },
+      payload: { credential_version: 'v3:qr-active:2' },
+    });
+    await expect(DatabaseService.getQrCredentialContext(11, 5)).resolves.toEqual(context);
+    await DatabaseService.clearQrCredentials();
+
+    expect(database.runAsync.mock.calls[0][1]).toEqual([
+      11,
+      5,
+      JSON.stringify({ credential, context }),
+      expiresAt * 1_000,
+    ]);
+    expect(database.execAsync).toHaveBeenCalledWith('DELETE FROM qr_credentials');
+  });
 });

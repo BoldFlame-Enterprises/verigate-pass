@@ -33,6 +33,9 @@ class DeviceControlServiceClass {
     SyncScheduler.stop();
     await Promise.allSettled([
       QrCredentialService.revokeLocalAuthority(),
+      import('./DatabaseService').then(({ DatabaseService }) =>
+        DatabaseService.clearQrCredentials()
+      ),
       OfflineSessionService.clear(),
       ApiClient.clearTokens(),
     ]);

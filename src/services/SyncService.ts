@@ -6,7 +6,13 @@ import {
   DeviceControlReason,
 } from './ApiClient';
 import { DatabaseService, User } from './DatabaseService';
-import { QrCredentialService, AuthorityCredential } from './QrCredentialService';
+import {
+  AuthorityCredential,
+  AuthorityCredentialV3,
+  QrAuthorityCredential,
+  QrCredentialContext,
+  QrCredentialService,
+} from './QrCredentialService';
 import { OfflineSessionService } from './OfflineSessionService';
 import { DeviceIdentityService } from './DeviceIdentityService';
 
@@ -32,9 +38,30 @@ export interface SyncResult {
 }
 
 const CREDENTIAL_RENEWAL_WINDOW_MS = 60_000;
-const MINIMUM_CREDENTIAL_AGE_FOR_EARLY_RENEWAL_MS = 5 * 60_000;
 
-function sameAssignments(left: AuthorityCredential['payload']['assignments'], right: User['assignments']): boolean {
+interface CredentialProjection {
+  contract_version: 'event-user-v3';
+  user: User;
+  qr_credential_context: QrCredentialContext;
+}
+
+interface LegacyCredentialProjection {
+  contract_version: 'event-user-v2';
+  user: User;
+}
+
+interface GeneratedCredential {
+  contract_version: 'qr-credential-v3';
+  credential: AuthorityCredentialV3;
+  active_authority_key_id: string;
+  registration_generation: number;
+  expires_at: number;
+}
+
+function sameAssignments(
+  left: AuthorityCredential['payload']['assignments'],
+  right: User['assignments']
+): boolean {
   const normalize = (assignments: User['assignments'] = []) => [...assignments]
     .sort((a, b) => a.area_id - b.area_id || a.access_level_id - b.access_level_id)
     .map((assignment) => ({
@@ -46,7 +73,6 @@ function sameAssignments(left: AuthorityCredential['payload']['assignments'], ri
       valid_from: assignment.valid_from,
       valid_until: assignment.valid_until,
     }));
-
   return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
 }
 
@@ -104,37 +130,105 @@ class SyncServiceClass {
         await QrCredentialService.allowRegisteredAuthority();
       }
 
-      const credentialData = await ApiClient.request<{ contract_version: string; user: User }>('/sync/my-credential', {
-        params: { event_id: eventId },
-      });
+      const credentialData = await ApiClient.request<
+        CredentialProjection | LegacyCredentialProjection
+      >('/sync/my-credential', { params: { event_id: eventId } });
       await DatabaseService.upsertSyncedUsers([credentialData.user]);
 
       const currentCredential = await DatabaseService.getQrCredential?.(eventId, credentialData.user.id) ?? null;
       const now = Date.now();
-      const credentialMatches = currentCredential
-        && currentCredential.payload.event_id === eventId
-        && currentCredential.payload.user_id === credentialData.user.id
-        && currentCredential.payload.device_id === deviceId
-        && currentCredential.payload.email === credentialData.user.email
-        && currentCredential.payload.name === credentialData.user.name
-        && sameAssignments(currentCredential.payload.assignments, credentialData.user.assignments);
-      const shouldRenewSoon = currentCredential
-        && currentCredential.payload.expires_at - now <= CREDENTIAL_RENEWAL_WINDOW_MS
-        && now - currentCredential.payload.issued_at >= MINIMUM_CREDENTIAL_AGE_FOR_EARLY_RENEWAL_MS;
+      let credentialMatches = false;
+      let activeCredential: QrAuthorityCredential | null = currentCredential;
+      let credentialExpiresAt = 0;
+      let devicePublicKey: string;
+      if (credentialData.contract_version === 'event-user-v3') {
+        if (credentialData.qr_credential_context.installation_id !== deviceId) {
+          throw new Error('Credential renewal context does not match this Pass installation');
+        }
+        devicePublicKey = await QrCredentialService.getPublicKeyPointBase64Url();
+        if (currentCredential && 'p' in currentCredential) {
+          try {
+            await QrCredentialService.validateV3Credential(currentCredential, {
+              eventId,
+              userId: credentialData.user.id,
+              deviceId,
+              devicePublicKey,
+              context: credentialData.qr_credential_context,
+              now,
+            });
+            credentialMatches = true;
+          } catch {
+            credentialMatches = false;
+          }
+        }
+        credentialExpiresAt = currentCredential
+          ? QrCredentialService.credentialExpiresAtMs(currentCredential)
+          : 0;
+      } else {
+        devicePublicKey = await QrCredentialService.getPublicKeySpkiBase64();
+        if (currentCredential && !('p' in currentCredential)) {
+          credentialMatches =
+            currentCredential.payload.event_id === eventId &&
+            currentCredential.payload.user_id === credentialData.user.id &&
+            currentCredential.payload.device_id === deviceId &&
+            currentCredential.payload.email === credentialData.user.email &&
+            currentCredential.payload.name === credentialData.user.name &&
+            sameAssignments(
+              currentCredential.payload.assignments,
+              credentialData.user.assignments
+            );
+          credentialExpiresAt = currentCredential.payload.expires_at;
+        }
+      }
+      const shouldRenewSoon = currentCredential &&
+        credentialExpiresAt - now <= CREDENTIAL_RENEWAL_WINDOW_MS;
       const credentialRenewed = !credentialMatches || Boolean(shouldRenewSoon);
-      let activeCredential = currentCredential;
 
       if (credentialRenewed) {
-        const devicePublicKey = await QrCredentialService.getPublicKeySpkiBase64();
-        const qrData = await ApiClient.request<{ credential: AuthorityCredential }>('/qr/generate', {
-          params: {
-            event_id: eventId,
-            device_id: deviceId,
-            device_public_key: devicePublicKey,
-          },
-        });
-        await DatabaseService.storeQrCredential(qrData.credential);
-        activeCredential = qrData.credential;
+        if (credentialData.contract_version === 'event-user-v3') {
+          const qrData = await ApiClient.request<GeneratedCredential>('/qr/generate', {
+            params: {
+              event_id: eventId,
+              device_id: deviceId,
+              device_public_key: devicePublicKey,
+              protocol_version: 3,
+            },
+          });
+          if (
+            qrData.contract_version !== 'qr-credential-v3' ||
+            qrData.active_authority_key_id !==
+              credentialData.qr_credential_context.active_authority_key.kid ||
+            qrData.registration_generation !==
+              credentialData.qr_credential_context.registration_generation
+          ) {
+            throw new Error('Generated credential metadata does not match the active Pass session');
+          }
+          activeCredential = await QrCredentialService.validateV3Credential(qrData.credential, {
+            eventId,
+            userId: credentialData.user.id,
+            deviceId,
+            devicePublicKey,
+            context: credentialData.qr_credential_context,
+            now,
+          });
+          await DatabaseService.storeQrCredential(
+            activeCredential,
+            credentialData.qr_credential_context
+          );
+        } else {
+          const qrData = await ApiClient.request<{ credential: AuthorityCredential }>(
+            '/qr/generate',
+            {
+              params: {
+                event_id: eventId,
+                device_id: deviceId,
+                device_public_key: devicePublicKey,
+              },
+            }
+          );
+          activeCredential = qrData.credential;
+          await DatabaseService.storeQrCredential(activeCredential);
+        }
       }
 
       if (event.ends_at) {
@@ -153,7 +247,9 @@ class SyncServiceClass {
           eventId,
           deviceId,
           tokenBinding,
-          credentialVersion: activeCredential.payload.credential_version,
+          credentialVersion: 'p' in activeCredential
+            ? QrCredentialService.credentialVersionIdentifier(activeCredential)
+            : activeCredential.payload.credential_version,
         });
       }
 
