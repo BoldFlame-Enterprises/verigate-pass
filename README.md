@@ -18,7 +18,15 @@ The mobile app event attendees use to display their signed, device-bound QR code
 - **Screen-capture protection**: `expo-screen-capture` blocks screenshots/screen recording app-wide.
 - **Backgrounding protection + auto-logout**: a blur overlay covers the screen the instant the app backgrounds (`expo-blur`), and the session is force-logged-out after 5 minutes of inactivity or backgrounding.
 - **Biometric login**: optional Face ID / fingerprint unlock (`expo-local-authentication`) for a remembered session, credentials held in `expo-secure-store`.
-- **Foreground event sync**: production login authenticates against the backend and downloads the caller's complete assignment-rich event projection. While the authenticated screen is active, the scheduler polls at a nominal 10-second cadence and uses bounded backoff/jitter after failure. Background execution is not supported; manual sync remains available. Blank-password local data is available only when `EXPO_PUBLIC_DEMO_MODE=true`.
+- **Foreground event sync**: account authority discovers/selects the event
+  before registration exchange. Later device-session sync uses the signed and
+  persisted registration event and never calls account-only `/events`.
+  Requests and refresh share bounded deadlines, timed-out idempotent writes
+  preserve their key, and scheduler in-flight state is always released for
+  bounded backoff. While the authenticated screen is active, the scheduler
+  polls at a nominal 10-second cadence. Background execution is not supported;
+  manual sync remains available. Blank-password local data is available only
+  when `EXPO_PUBLIC_DEMO_MODE=true`.
 - **Installation-bound sessions**: production login exchanges the account session for a Pass registration scoped to one event and installation. Connected launch, resume, sync, QR, and notification paths enforce that registration. Deregistration or blacklisting stops foreground authority, clears local QR presentation authority, logs out, and stores a notice that is shown on the next login screen. Deregistration may be re-registered by logging in; a blacklisted installation remains blocked until an event administrator removes it from that event's blacklist.
 - **Revocable logout**: manual logout attempts server-side family revocation,
   then clears local tokens and authority even if the network request fails.
