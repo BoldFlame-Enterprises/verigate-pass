@@ -28,6 +28,10 @@ describe('ApiClient token binding', () => {
     await ApiClient.clearTokens();
   });
 
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('rotates on password login, survives refresh, and clears on logout', async () => {
     jest.mocked(global.fetch)
       .mockResolvedValueOnce(response(200, {
@@ -136,5 +140,60 @@ describe('ApiClient token binding', () => {
       status: 401,
       code: 'DEVICE_BLACKLISTED',
     });
+  });
+
+  it('releases a never-settling request at its deadline', async () => {
+    jest.mocked(global.fetch)
+      .mockResolvedValueOnce(response(200, {
+        success: true,
+        data: {
+          user: { id: 1, email: 'user@example.com', name: 'User', phone: '1', role: 'user', is_active: true },
+          accessToken: 'access-1',
+          refreshToken: 'refresh-1',
+        },
+      }) as never)
+      .mockImplementationOnce(() => new Promise(() => undefined));
+    await ApiClient.login('user@example.com', 'password');
+    jest.useFakeTimers();
+
+    const pending = ApiClient.request('/events', { timeoutMs: 50 });
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: 'REQUEST_TIMEOUT',
+      kind: 'timeout',
+    });
+    await jest.advanceTimersByTimeAsync(50);
+
+    await rejection;
+    jest.useRealTimers();
+  });
+
+  it('preserves an idempotency key across refresh and retry', async () => {
+    jest.mocked(global.fetch)
+      .mockResolvedValueOnce(response(200, {
+        success: true,
+        data: {
+          user: { id: 1, email: 'user@example.com', name: 'User', phone: '1', role: 'user', is_active: true },
+          accessToken: 'access-1',
+          refreshToken: 'refresh-1',
+        },
+      }) as never)
+      .mockResolvedValueOnce(response(401, { success: false }) as never)
+      .mockResolvedValueOnce(response(200, {
+        success: true,
+        data: { accessToken: 'access-2', refreshToken: 'refresh-2' },
+      }) as never)
+      .mockResolvedValueOnce(response(200, { success: true, data: { stored: true } }) as never);
+    await ApiClient.login('user@example.com', 'password');
+
+    await ApiClient.request('/write', {
+      method: 'POST',
+      idempotencyKey: 'stable-write-key',
+      body: { value: 1 },
+    });
+
+    expect((jest.mocked(global.fetch).mock.calls[1][1] as any).headers)
+      .toMatchObject({ 'Idempotency-Key': 'stable-write-key' });
+    expect((jest.mocked(global.fetch).mock.calls[3][1] as any).headers)
+      .toMatchObject({ 'Idempotency-Key': 'stable-write-key' });
   });
 });

@@ -19,6 +19,7 @@ jest.mock('../ApiClient', () => ({
   ApiClient: {
     isAuthenticated: jest.fn(() => true),
     hasDeviceSession: jest.fn(() => true),
+    getDeviceEventId: jest.fn(() => 8),
     getTokenBinding: jest.fn(() => 'token-family-1'),
     registerDeviceSession: jest.fn(),
     request: jest.fn(),
@@ -257,6 +258,7 @@ describe('SyncService credential renewal', () => {
     const result = await SyncService.syncNow();
 
     expect(result).toMatchObject({ success: true, credentialRenewed: false });
+    expect(ApiClient.request).not.toHaveBeenCalledWith('/events');
     expect(DatabaseService.upsertSyncedUsers).toHaveBeenCalledWith([user]);
     expect(ApiClient.request).not.toHaveBeenCalledWith('/qr/generate', expect.anything());
     expect(DatabaseService.storeQrCredential).not.toHaveBeenCalled();
@@ -268,6 +270,7 @@ describe('SyncService credential renewal', () => {
     const result = await SyncService.syncNow();
 
     expect(result).toMatchObject({ success: true, credentialRenewed: true });
+    expect(ApiClient.request).not.toHaveBeenCalledWith('/events');
     expect(ApiClient.request).toHaveBeenCalledWith('/qr/generate', {
       params: {
         event_id: 8,

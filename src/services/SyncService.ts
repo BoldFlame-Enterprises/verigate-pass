@@ -18,6 +18,7 @@ import { DeviceIdentityService } from './DeviceIdentityService';
 
 const CURRENT_EVENT_ID_KEY = 'verigate_pass_event_id';
 const CURRENT_EVENT_NAME_KEY = 'verigate_pass_event_name';
+const CURRENT_EVENT_ENDS_AT_KEY = 'verigate_pass_event_ends_at';
 const LAST_SYNC_AT_KEY = 'verigate_pass_last_sync_at';
 
 interface RemoteEvent {
@@ -106,20 +107,49 @@ class SyncServiceClass {
     return this.inFlight;
   }
 
+  async selectEvent(event: RemoteEvent): Promise<void> {
+    if (!Number.isSafeInteger(event.id) || event.id <= 0) {
+      throw new Error('Selected event is invalid');
+    }
+    await Promise.all([
+      SecureStore.setItemAsync(CURRENT_EVENT_ID_KEY, String(event.id)),
+      SecureStore.setItemAsync(CURRENT_EVENT_NAME_KEY, event.name),
+      event.ends_at
+        ? SecureStore.setItemAsync(CURRENT_EVENT_ENDS_AT_KEY, event.ends_at)
+        : SecureStore.deleteItemAsync(CURRENT_EVENT_ENDS_AT_KEY),
+    ]);
+  }
+
   private async performSync(): Promise<SyncResult> {
     try {
       if (!ApiClient.isAuthenticated()) {
         return { success: false, error: 'Not authenticated with backend' };
       }
 
-      const events = await ApiClient.request<RemoteEvent[]>('/events');
-      if (events.length === 0) {
-        return { success: false, error: 'No events assigned to this account yet' };
+      let event: RemoteEvent;
+      let eventId: number;
+      if (ApiClient.hasDeviceSession()) {
+        const boundEventId = ApiClient.getDeviceEventId();
+        if (!boundEventId) {
+          return { success: false, error: 'Device session has no validated event binding' };
+        }
+        eventId = boundEventId;
+        event = {
+          id: eventId,
+          name: await this.getCurrentEventName() ?? `Event ${eventId}`,
+          ends_at: await SecureStore.getItemAsync(CURRENT_EVENT_ENDS_AT_KEY),
+          slug: '',
+        };
+      } else {
+        const events = await ApiClient.request<RemoteEvent[]>('/events');
+        if (events.length === 0) {
+          return { success: false, error: 'No events assigned to this account yet' };
+        }
+        const storedEventId = await this.getCurrentEventId();
+        event = events.find((candidate) => candidate.id === storedEventId) ?? events[0];
+        eventId = event.id;
+        await this.selectEvent(event);
       }
-
-      let eventId = await this.getCurrentEventId();
-      let event = events.find((e) => e.id === eventId) ?? events[0];
-      eventId = event.id;
       const deviceId = await this.getDeviceId();
       if (!ApiClient.hasDeviceSession()) {
         await ApiClient.registerDeviceSession(
@@ -255,6 +285,7 @@ class SyncServiceClass {
 
       await ApiClient.request('/notifications/sync-heartbeat', {
         method: 'POST',
+        timeoutMs: 5_000,
         body: { device_id: deviceId, app: 'pass', event_id: eventId, platform: Platform.OS },
       }).catch(() => undefined); // heartbeat is best-effort, never blocks sync
 

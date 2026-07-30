@@ -2,6 +2,7 @@
 jest.mock('expo-secure-store', () => ({
   getItemAsync: jest.fn(async () => null),
   setItemAsync: jest.fn(async () => undefined),
+  deleteItemAsync: jest.fn(async () => undefined),
 }));
 jest.mock('expo-application', () => ({
   getAndroidId: jest.fn(() => 'android-device'),
@@ -25,6 +26,7 @@ jest.mock('../ApiClient', () => ({
     })),
     request: jest.fn(),
   },
+  deviceControlReason: jest.fn(() => null),
 }));
 jest.mock('../DatabaseService', () => ({
   DatabaseService: {
