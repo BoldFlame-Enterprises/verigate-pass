@@ -20,8 +20,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.verigate.pass",
       "infoPlist": {
-        "NSFaceIDUsageDescription": "Use Face ID to authenticate and secure your access credentials.",
-        "NSCameraUsageDescription": "Camera access is required for QR code functionality."
+        "NSFaceIDUsageDescription": "Use Face ID to authenticate and secure your access credentials."
       }
     },
     "android": {
@@ -31,7 +30,6 @@
       },
       "package": "com.verigate.pass",
       "permissions": [
-        "android.permission.CAMERA",
         "android.permission.INTERNET",
         "android.permission.USE_BIOMETRIC",
         "android.permission.USE_FINGERPRINT"
@@ -63,6 +61,7 @@
       },
       "apiBaseUrl": "http://localhost:3000/api",
       "demoMode": false,
+      "notificationsEnabled": false,
       "eas": {
         "projectId": "f493b0bd-f62a-4073-90a8-47217af3b0dc"
       }

@@ -186,6 +186,8 @@ coverage/
 *.pem
 *.key
 credentials.json
+google-services.json
+GoogleService-Info.plist
 *.jks
 *.p8
 *.p12

@@ -58,7 +58,29 @@ eas build --profile development --platform android
 
 ## ⚙️ Configuration
 
-Set `EXPO_PUBLIC_API_URL` (or `expo.extra.apiBaseUrl` in `app.json`) to your backend's `/api` URL. Android provider configuration may use `google-services.json`; treat that Firebase client configuration as public configuration and restrict its Firebase services rather than treating it as a private signing key. Private local EAS/signing/provider files such as `credentials.json`, `*.jks`, `*.p8`, `*.p12`, and `*.mobileprovision` are ignored.
+Unprofiled local development may use the loopback `expo.extra.apiBaseUrl` from
+`app.json`. Every EAS development, preview, and production profile supplies an
+explicit HTTPS backend `/api` URL, disables demo mode, identifies its platform,
+and selects its matching EAS environment. Profiled config evaluation fails
+before prebuild when the URL is missing, malformed, non-HTTPS, loopback,
+credential-bearing, or does not end at `/api`.
+
+Android EAS profiles declare notifications enabled and therefore require a
+`GOOGLE_SERVICES_JSON` file environment variable. Configure that variable in
+the matching EAS environment as a file value containing the Firebase Android
+client configuration for `com.verigate.pass`. Config evaluation checks that the
+file exists and contains the matching package before setting
+`android.googleServicesFile`. The source tree intentionally ignores local
+`google-services.json` and `GoogleService-Info.plist` files.
+
+Firebase client configuration contains public-facing project identifiers, but
+service-account JSON, signing keys, APNs keys, certificates, provisioning
+profiles, and credentials remain private. Files such as `credentials.json`,
+`*.jks`, `*.p8`, `*.p12`, and `*.mobileprovision` are ignored and must not be
+committed.
+
+Pass only presents attendee QR credentials and requests no camera permission.
+Camera authority belongs to the separate Scan application.
 
 ## 📦 Scripts
 
