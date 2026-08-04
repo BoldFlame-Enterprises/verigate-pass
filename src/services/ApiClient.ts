@@ -36,6 +36,33 @@ interface APIResponse<T> {
   error?: string;
   message?: string;
   code?: string;
+  request_id?: string;
+  correlation_id?: string;
+}
+
+export interface ApiTrace {
+  requestId?: string;
+  correlationId: string;
+}
+
+const SAFE_TRACE_ID = /^[A-Za-z0-9._:-]{1,64}$/;
+
+function safeTraceId(value: unknown): string | undefined {
+  return typeof value === 'string' && SAFE_TRACE_ID.test(value) ? value : undefined;
+}
+
+function traceForResponse<T>(
+  response: Awaited<ReturnType<typeof fetch>>,
+  json: APIResponse<T>,
+  sentCorrelationId: string
+): ApiTrace {
+  return {
+    requestId: safeTraceId(response.headers?.get?.('x-request-id'))
+      ?? safeTraceId(json.request_id),
+    correlationId: safeTraceId(response.headers?.get?.('x-correlation-id'))
+      ?? safeTraceId(json.correlation_id)
+      ?? sentCorrelationId,
+  };
 }
 
 type SessionKind = 'account' | 'device';
@@ -50,7 +77,9 @@ export class ApiRequestError extends Error {
       ? 'session'
       : status >= 400 && status < 500
         ? 'validation'
-        : 'server'
+        : 'server',
+    public readonly requestId?: string,
+    public readonly correlationId?: string
   ) {
     super(message);
     this.name = 'ApiRequestError';
@@ -60,7 +89,8 @@ export class ApiRequestError extends Error {
 async function fetchJsonWithDeadline<T>(
   url: string,
   init: Record<string, unknown>,
-  timeoutMs: number
+  timeoutMs: number,
+  correlationId: string
 ): Promise<{ response: Awaited<ReturnType<typeof fetch>>; json: T }> {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -72,7 +102,9 @@ async function fetchJsonWithDeadline<T>(
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       controller.abort();
-      reject(new ApiRequestError(0, 'REQUEST_TIMEOUT', 'Request timed out', 'timeout'));
+      reject(new ApiRequestError(
+        0, 'REQUEST_TIMEOUT', 'Request timed out', 'timeout', undefined, correlationId
+      ));
     }, Math.max(1, timeoutMs));
   });
   try {
@@ -83,7 +115,9 @@ async function fetchJsonWithDeadline<T>(
       0,
       'NETWORK_ERROR',
       error instanceof Error ? error.message : 'Network request failed',
-      'network'
+      'network',
+      undefined,
+      correlationId
     );
   } finally {
     if (timer) clearTimeout(timer);
@@ -111,6 +145,7 @@ class ApiClientClass {
   private tokenBinding: string | null = null;
   private sessionKind: SessionKind | null = null;
   private deviceEventId: number | null = null;
+  private lastTrace: ApiTrace | null = null;
 
   async loadTokens(): Promise<void> {
     const [accessToken, refreshToken, tokenBinding, sessionKind, deviceEventId] = await Promise.all([
@@ -148,6 +183,20 @@ class ApiClientClass {
     return this.sessionKind === 'device' ? this.deviceEventId : null;
   }
 
+  getLastRequestTrace(): ApiTrace | null {
+    return this.lastTrace ? { ...this.lastTrace } : null;
+  }
+
+  private captureTrace<T>(
+    response: Awaited<ReturnType<typeof fetch>>,
+    json: APIResponse<T>,
+    correlationId: string
+  ): ApiTrace {
+    const trace = traceForResponse(response, json, correlationId);
+    this.lastTrace = trace;
+    return trace;
+  }
+
   private async setTokens(
     accessToken: string,
     refreshToken: string,
@@ -173,6 +222,7 @@ class ApiClientClass {
     this.tokenBinding = null;
     this.sessionKind = null;
     this.deviceEventId = null;
+    this.lastTrace = null;
     await Promise.all([
       SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
       SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
@@ -185,10 +235,14 @@ class ApiClientClass {
   async logout(): Promise<void> {
     try {
       if (this.accessToken) {
+        const correlationId = Crypto.randomUUID();
         await fetchJsonWithDeadline(`${API_BASE_URL}/auth/logout`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${this.accessToken}` },
-        }, HEARTBEAT_TIMEOUT_MS).catch(() => undefined);
+          headers: {
+            Authorization: `Bearer ${this.accessToken}`,
+            'X-Correlation-Id': correlationId,
+          },
+        }, HEARTBEAT_TIMEOUT_MS, correlationId).catch(() => undefined);
       }
     } finally {
       await this.clearTokens();
@@ -196,20 +250,28 @@ class ApiClientClass {
   }
 
   async login(email: string, password: string): Promise<BackendUser> {
+    const correlationId = Crypto.randomUUID();
     const { response, json } = await fetchJsonWithDeadline<APIResponse<{
       user: BackendUser;
       accessToken: string;
       refreshToken: string;
     }>>(`${API_BASE_URL}/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Correlation-Id': correlationId,
+      },
       body: JSON.stringify({ email, password, client_kind: 'pass' }),
-    }, LOGIN_TIMEOUT_MS);
+    }, LOGIN_TIMEOUT_MS, correlationId);
+    const trace = this.captureTrace(response, json, correlationId);
     if (!response.ok || !json.success || !json.data) {
       throw new ApiRequestError(
         response.status,
         json.code,
-        json.error || 'Login failed'
+        json.error || 'Login failed',
+        undefined,
+        trace.requestId,
+        trace.correlationId
       );
     }
     await this.setTokens(json.data.accessToken, json.data.refreshToken, {
@@ -256,24 +318,33 @@ class ApiClientClass {
     return this.request('/devices/state');
   }
 
-  private async refresh(deadlineAt: number): Promise<boolean> {
+  private async refresh(deadlineAt: number, correlationId: string): Promise<boolean> {
     if (!this.refreshToken) return false;
     const remaining = deadlineAt - Date.now();
     if (remaining <= 0) {
-      throw new ApiRequestError(0, 'REQUEST_TIMEOUT', 'Session refresh timed out', 'timeout');
+      throw new ApiRequestError(
+        0, 'REQUEST_TIMEOUT', 'Session refresh timed out', 'timeout', undefined, correlationId
+      );
     }
     const { response, json } = await fetchJsonWithDeadline<
       APIResponse<{ accessToken: string; refreshToken: string }>
     >(`${API_BASE_URL}/auth/refresh`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Correlation-Id': correlationId,
+      },
       body: JSON.stringify({ refreshToken: this.refreshToken }),
-    }, remaining);
+    }, remaining, correlationId);
+    const trace = this.captureTrace(response, json, correlationId);
     if (!response.ok || !json.success || !json.data) {
       throw new ApiRequestError(
         response.status,
         json.code,
-        json.error || 'Session refresh failed'
+        json.error || 'Session refresh failed',
+        undefined,
+        trace.requestId,
+        trace.correlationId
       );
     }
     await this.setTokens(json.data.accessToken, json.data.refreshToken);
@@ -298,34 +369,43 @@ class ApiClientClass {
       ).toString()
       : '';
     const url = `${API_BASE_URL}${path}${query}`;
+    const correlationId = Crypto.randomUUID();
     const deadlineAt = Date.now() + (options.timeoutMs ?? REQUEST_TIMEOUT_MS);
     const doFetch = async () => {
       const remaining = deadlineAt - Date.now();
       if (remaining <= 0) {
-        throw new ApiRequestError(0, 'REQUEST_TIMEOUT', `Request timed out: ${path}`, 'timeout');
+        throw new ApiRequestError(
+          0, 'REQUEST_TIMEOUT', `Request timed out: ${path}`, 'timeout', undefined, correlationId
+        );
       }
       return fetchJsonWithDeadline<APIResponse<T>>(url, {
         method: options.method || 'GET',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.accessToken}`,
+          'X-Correlation-Id': correlationId,
           ...(options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
         },
         body: options.body ? JSON.stringify(options.body) : undefined,
-      }, remaining);
+      }, remaining, correlationId);
     };
 
     let { response, json } = await doFetch();
+    let trace = this.captureTrace(response, json, correlationId);
     if (response.status === 401) {
       const initialError = new ApiRequestError(
         response.status,
         json.code,
-        json.error || `Request failed: ${path}`
+        json.error || `Request failed: ${path}`,
+        undefined,
+        trace.requestId,
+        trace.correlationId
       );
       try {
-        const refreshed = await this.refresh(deadlineAt);
+        const refreshed = await this.refresh(deadlineAt, correlationId);
         if (refreshed) {
           ({ response, json } = await doFetch());
+          trace = this.captureTrace(response, json, correlationId);
         }
       } catch (refreshError) {
         throw initialError.code ? initialError : refreshError;
@@ -336,7 +416,10 @@ class ApiClientClass {
       throw new ApiRequestError(
         response.status,
         json.code,
-        json.error || `Request failed: ${path}`
+        json.error || `Request failed: ${path}`,
+        undefined,
+        trace.requestId,
+        trace.correlationId
       );
     }
     return json.data as T;
